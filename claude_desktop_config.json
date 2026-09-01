@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "openLCA": {
+      "command": "python",
+      "args": ["C:/software/FOUNDATION/lca-assistant/mcp_lca_server.py"],
+      "env": {
+        "OLCA_PORT": "8080"
+      }
+    }
+  }
+}
