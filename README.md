@@ -2,7 +2,7 @@
 
 An MCP (Model Context Protocol) server that connects AI assistants to a running openLCA instance. Developed and tested with Claude Desktop; compatible with any MCP client that supports stdio transport. Built by [Below280](https://below280.com), the UK partner for openLCA.
 
-The server exposes 29 tools covering the full LCA workflow: exploring databases, building and editing models, running calculations (scenarios, sensitivity, Monte Carlo, contribution analysis), auditing and validating models, and extracting data quality assessments. All calculation patterns are tested against production ecoinvent databases.
+The server exposes 30 tools covering the full LCA workflow: exploring databases, building and editing models, running calculations (scenarios, sensitivity, Monte Carlo, contribution analysis), auditing and validating models, and extracting data quality assessments. All calculation patterns are tested against production ecoinvent databases.
 
 The server works with both ecoinvent-family databases (ecoinvent, EN15804GD, HiQLCD, BAFU) and FLCAC-family databases (LCA Commons, US LCI, USEEIO). It asks which family you are using, or auto-detects from the flow property names.
 
@@ -85,7 +85,24 @@ Go to Settings > Tools & MCP > Add MCP Server. Choose stdio transport, set the c
 
 #### VS Code
 
-Add the server to `.vscode/mcp.json` or user settings, using the same command and args pattern as the Claude Desktop config above.
+Add the server to `.vscode/mcp.json` in your workspace:
+
+```json
+{
+  "servers": {
+    "openLCA": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["C:/path/to/B280-olca-MCP/mcp_lca_server.py"],
+      "env": {
+        "OLCA_PORT": "8080"
+      }
+    }
+  }
+}
+```
+
+Note: VS Code uses `servers` as the root key, not `mcpServers`. If using GitHub Copilot, switch Copilot Chat to **Agent mode** for MCP tools to work.
 
 #### ChatGPT
 
@@ -113,7 +130,7 @@ openLCA does not auto-refresh when changes are made via IPC. After using the mod
 
 ## Tools
 
-### Explore (10 tools)
+### Explore (11 tools)
 
 | Tool | Purpose |
 |------|---------|
@@ -121,8 +138,9 @@ openLCA does not auto-refresh when changes are made via IPC. After using the mod
 | `set_database_family` | Set ecoinvent or FLCAC naming conventions (from user input) |
 | `list_systems` | List/search product systems |
 | `list_methods` | List/search impact assessment methods |
-| `search_processes` | Find processes by name |
+| `search_processes` | Find processes by name, category, and/or location |
 | `search_flows` | Find flows by name and/or category folder |
+| `chemical_synonyms` | Look up chemical synonyms via PubChem and search the database for matches |
 | `process_details` | Full process info: exchanges, parameters, providers |
 | `system_parameters` | List parameters for a product system |
 | `global_parameters` | Look up database-level parameters |

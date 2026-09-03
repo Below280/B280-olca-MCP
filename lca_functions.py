@@ -15,6 +15,9 @@ import time
 import csv
 import os
 import uuid
+import urllib.request
+import urllib.parse
+import json as json_module
 
 logger = logging.getLogger(__name__)
 
@@ -177,17 +180,23 @@ class LCAFunctions:
 
     def search_processes(self, search_term: str,
                          category_filter: str = "",
+                         location_filter: str = "",
                          limit: int = 20) -> Dict:
-        """Search processes by name and/or category folder."""
+        """Search processes by name, category, and/or location."""
         processes = self._get_descriptors(o.Process)
         term = search_term.lower()
         cat = category_filter.lower() if category_filter else ""
+        loc = location_filter.lower() if location_filter else ""
         all_matches = []
         for p in processes:
             if term and term not in p.name.lower():
                 continue
             proc_cat = getattr(p, "category", "") or ""
             if cat and cat not in proc_cat.lower():
+                continue
+            # Location filter: check if location code/name is in process name
+            # (ecoinvent embeds location in name, e.g. "| Cutoff, U - GB")
+            if loc and loc not in p.name.lower():
                 continue
             all_matches.append({
                 "id": p.id,
@@ -237,6 +246,107 @@ class LCAFunctions:
             "count": len(matches),
             "flows": matches,
         }
+
+    def chemical_synonyms(self, chemical_name: str,
+                          search_database: bool = True,
+                          max_synonyms: int = 20) -> Dict:
+        """
+        Look up chemical synonyms via PubChem (US NIH, free, no key).
+
+        Takes a chemical name (common name, trade name, or IUPAC),
+        returns known synonyms, CAS number, and IUPAC name.
+        If search_database is True, also searches the connected
+        openLCA database for matches against each synonym.
+
+        Only call this when the user has approved a deeper search,
+        or when a basic search_processes call returned few results
+        and the user said yes to trying synonyms.
+        """
+        try:
+            encoded = urllib.parse.quote(chemical_name)
+            url = (
+                f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/"
+                f"compound/name/{encoded}/synonyms/JSON"
+            )
+
+            req = urllib.request.Request(url)
+            req.add_header("User-Agent", "Below280-openLCA-MCP/1.0")
+
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json_module.loads(resp.read().decode())
+
+            synonyms_list = (
+                data.get("InformationList", {})
+                .get("Information", [{}])[0]
+                .get("Synonym", [])
+            )
+
+            # Extract CAS number (format: digits-digits-digit)
+            import re
+            cas = None
+            for s in synonyms_list:
+                if re.match(r"^\d{2,7}-\d{2}-\d$", s):
+                    cas = s
+                    break
+
+            # Take the most useful synonyms (skip catalog numbers)
+            useful = []
+            for s in synonyms_list:
+                if len(s) > 80:
+                    continue
+                if any(c in s for c in [";", "  ", "\t"]):
+                    continue
+                useful.append(s)
+                if len(useful) >= max_synonyms:
+                    break
+
+            result = {
+                "query": chemical_name,
+                "cas_number": cas,
+                "iupac_name": useful[0] if useful else None,
+                "synonym_count": len(synonyms_list),
+                "synonyms": useful,
+            }
+
+            # Search the openLCA database for matches
+            if search_database and useful:
+                db_matches = []
+                seen_ids = set()
+                processes = self._get_descriptors(o.Process)
+
+                for synonym in useful[:10]:
+                    term = synonym.lower()
+                    for p in processes:
+                        if p.id in seen_ids:
+                            continue
+                        if term in p.name.lower():
+                            db_matches.append({
+                                "id": p.id,
+                                "name": p.name,
+                                "matched_synonym": synonym,
+                                "category": getattr(p, "category", ""),
+                            })
+                            seen_ids.add(p.id)
+                            if len(db_matches) >= 20:
+                                break
+                    if len(db_matches) >= 20:
+                        break
+
+                result["database_matches"] = db_matches
+                result["database_match_count"] = len(db_matches)
+
+            return result
+
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return {
+                    "query": chemical_name,
+                    "error": f"Chemical '{chemical_name}' not found in PubChem",
+                    "suggestion": "Try a different name, CAS number, or IUPAC name",
+                }
+            return {"error": f"PubChem API error: {e.code} {e.reason}"}
+        except Exception as e:
+            return {"error": f"PubChem lookup failed: {e}"}
 
     def get_process_details(self, process_id: str) -> Dict:
         """Full process information including exchanges and parameters."""
@@ -491,12 +601,23 @@ class LCAFunctions:
                     category: str = "",
                     flow_type: str = "product") -> Dict:
         """
-        Create a flow in the database.
-
-        flow_type: 'product', 'waste', or 'elementary'
-        Unit determines the flow property automatically.
-        Same pattern as make_flow() in create_east_bros_model.py.
+        Create a flow, or return the existing one if a flow with
+        the same name and category already exists.
         """
+        # Pre-flight: check if this flow already exists
+        existing = self._get_descriptors(o.Flow)
+        for f in existing:
+            f_cat = getattr(f, "category", "") or ""
+            if f.name == name and (not category or category in f_cat):
+                return {
+                    "flow_id": f.id,
+                    "flow_name": f.name,
+                    "unit": unit_name,
+                    "flow_type": flow_type,
+                    "category": f_cat,
+                    "already_existed": True,
+                }
+
         fp_ref = self._get_fp_ref(unit_name)
         if not fp_ref:
             return {"error": f"No flow property mapping for unit '{unit_name}'"}
@@ -538,21 +659,49 @@ class LCAFunctions:
     def create_bridge(self, name: str, unit_name: str,
                       category: str = "",
                       provider_id: Optional[str] = None,
+                      provider_flow_id: Optional[str] = None,
                       waste: bool = False) -> Dict:
         """
         Create a bridge flow AND bridge process in one call.
 
-        A bridge is a single-exchange process that connects
-        the foreground model to a background database process.
-        Same pattern as bridge_proc() in create_east_bros_model.py.
+        A bridge connects the foreground model to a background
+        database process. The bridge process has TWO exchanges:
 
-        For waste bridges (waste=True), the exchange is an input
-        (waste enters the process for treatment). For product/service
-        bridges, the exchange is an output.
+        For product bridges:
+          OUTPUT: the bridge flow (quantitative reference)
+          INPUT:  the background flow from the provider process
 
-        If provider_id is given, the background process is set as
-        default provider on the bridge exchange.
+        For waste bridges (waste=True):
+          INPUT:  the bridge flow (quantitative reference)
+          OUTPUT: the background waste flow to the treatment process
+
+        If provider_id is given, the function looks up the provider
+        process, finds its quantitative reference flow, and creates
+        the input exchange automatically. If provider_flow_id is
+        also given, it uses that flow instead of auto-detecting.
         """
+        # Pre-flight: check if a bridge process with this name exists
+        existing = self._get_descriptors(o.Process)
+        for p in existing:
+            p_cat = getattr(p, "category", "") or ""
+            if p.name == name and (not category or category in p_cat):
+                # Bridge process exists, find its bridge flow too
+                bridge_flow_id = None
+                proc = self.client.get(o.Process, p.id)
+                if proc and proc.exchanges:
+                    for ex in proc.exchanges:
+                        if getattr(ex, "is_quantitative_reference", False) and ex.flow:
+                            bridge_flow_id = ex.flow.id
+                            break
+                return {
+                    "flow_id": bridge_flow_id,
+                    "flow_name": name,
+                    "process_id": p.id,
+                    "process_name": p.name,
+                    "category": p_cat,
+                    "already_existed": True,
+                }
+
         # Create the bridge flow
         flow_type = "waste" if waste else "product"
         flow_result = self.create_flow(name, unit_name, category, flow_type)
@@ -562,19 +711,61 @@ class LCAFunctions:
         flow_id = flow_result["flow_id"]
         unit_ref = self._get_unit_ref(unit_name)
 
-        # Build the single exchange
-        x = o.Exchange()
-        x.flow = o.Ref(id=flow_id, name=name, ref_type=o.RefType.Flow)
-        x.amount = 1.0
-        x.unit = unit_ref
-        x.is_input = waste  # waste enters, product leaves
-        x.is_quantitative_reference = True
-        x.is_avoided_product = False
+        # Build the bridge flow exchange (quantitative reference)
+        qref_x = o.Exchange()
+        qref_x.flow = o.Ref(id=flow_id, name=name, ref_type=o.RefType.Flow)
+        qref_x.amount = 1.0
+        qref_x.unit = unit_ref
+        qref_x.is_input = waste  # waste enters, product leaves
+        qref_x.is_quantitative_reference = True
+        qref_x.is_avoided_product = False
+        qref_x.internal_id = 1
 
+        exchanges = [qref_x]
+        bg_flow_name = None
+
+        # Build the background exchange if provider is given
         if provider_id:
-            x.default_provider = o.Ref(
-                id=provider_id, ref_type=o.RefType.Process,
-            )
+            bg_flow_ref = None
+
+            if provider_flow_id:
+                # Use the explicitly provided flow ID
+                bg_flow = self.client.get(o.Flow, provider_flow_id)
+                if bg_flow:
+                    bg_flow_ref = o.Ref(
+                        id=bg_flow.id, name=bg_flow.name,
+                        ref_type=o.RefType.Flow,
+                    )
+                    bg_flow_name = bg_flow.name
+            else:
+                # Auto-detect: look up provider's quantitative reference flow
+                provider_proc = self.client.get(o.Process, provider_id)
+                if provider_proc and provider_proc.exchanges:
+                    for ex in provider_proc.exchanges:
+                        if getattr(ex, "is_quantitative_reference", False):
+                            if ex.flow:
+                                bg_flow_ref = o.Ref(
+                                    id=ex.flow.id, name=ex.flow.name,
+                                    ref_type=o.RefType.Flow,
+                                )
+                                bg_flow_name = ex.flow.name
+                            break
+
+            if bg_flow_ref:
+                bg_x = o.Exchange()
+                bg_x.flow = bg_flow_ref
+                bg_x.amount = 1.0
+                bg_x.unit = unit_ref
+                # For product: background flow is INPUT to bridge
+                # For waste: background flow is OUTPUT from bridge
+                bg_x.is_input = not waste
+                bg_x.is_quantitative_reference = False
+                bg_x.is_avoided_product = False
+                bg_x.default_provider = o.Ref(
+                    id=provider_id, ref_type=o.RefType.Process,
+                )
+                bg_x.internal_id = 2
+                exchanges.append(bg_x)
 
         # Build the bridge process
         try:
@@ -584,13 +775,11 @@ class LCAFunctions:
             p.category = category
             p.process_type = o.ProcessType.UNIT_PROCESS
             p.description = (
-                "Bridge process: connects foreground model to background database. "
-                "Assign the correct background provider in openLCA if not set."
+                "Bridge process: connects foreground model to background database."
             )
-            x.internal_id = 1
-            p.last_internal_id = 1
-            p.quantitative_reference = x
-            p.exchanges = [x]
+            p.last_internal_id = len(exchanges)
+            p.quantitative_reference = qref_x
+            p.exchanges = exchanges
 
             proc_ref = self.client.put(p)
 
@@ -598,7 +787,7 @@ class LCAFunctions:
             self._cache.pop("Flow", None)
             self._cache.pop("Process", None)
 
-            return {
+            result = {
                 "flow_id": flow_id,
                 "flow_name": name,
                 "process_id": proc_ref.id,
@@ -607,37 +796,54 @@ class LCAFunctions:
                 "waste": waste,
                 "provider_id": provider_id,
                 "category": category,
+                "exchange_count": len(exchanges),
             }
+            if bg_flow_name:
+                result["background_flow"] = bg_flow_name
+            if not provider_id:
+                result["note"] = (
+                    "No provider set. Add the background input exchange "
+                    "manually in openLCA or use edit_process."
+                )
+            elif len(exchanges) == 1:
+                result["warning"] = (
+                    "Could not find the provider's quantitative reference "
+                    "flow. Bridge has no background input. Set provider_flow_id "
+                    "explicitly or add the input exchange manually."
+                )
+            return result
         except Exception as ex:
             return {"error": str(ex)}
 
     def create_process(self, name: str, category: str,
                        exchanges: List[Dict],
                        parameters: Optional[List[Dict]] = None,
-                       description: str = "") -> Dict:
+                       description: str = "",
+                       location: Optional[str] = None) -> Dict:
         """
-        Create a NEW process with exchanges and optional parameters.
+        Create a process, or return the existing one if a process
+        with the same name and category already exists.
 
-        This is insert-only. Calling it with the same name creates a
-        duplicate. To modify an existing process, use edit_process.
-
-        Same pattern as proc() in create_east_bros_model.py.
-
-        Each exchange dict:
-            flow_id:     UUID of the flow (validated against database)
-            amount:      numeric amount (default 0 if formula is set)
-            formula:     parameter formula string (optional)
-            unit:        unit name (e.g. 'kg', 'kWh')
-            is_input:    true for inputs, false for outputs
-            is_qref:     true for the quantitative reference (exactly one)
-            provider_id: UUID of provider process (optional, validated)
-
-        Each parameter dict:
-            name:        parameter name
-            value:       numeric value
-            description: what this parameter represents
+        If the process exists, returns its ID with already_existed=True
+        so the assistant can use edit_process to modify it.
         """
         try:
+            # Pre-flight: check if this process already exists
+            existing = self._get_descriptors(o.Process)
+            for p in existing:
+                p_cat = getattr(p, "category", "") or ""
+                if p.name == name and (not category or category in p_cat):
+                    return {
+                        "process_id": p.id,
+                        "process_name": p.name,
+                        "category": p_cat,
+                        "already_existed": True,
+                        "hint": (
+                            "Process already exists. Use edit_process to "
+                            "add exchanges or parameters, or use a different name."
+                        ),
+                    }
+
             # Validate all flow_ids and provider_ids exist in this database
             for i, ex_def in enumerate(exchanges):
                 fid = ex_def.get("flow_id")
@@ -663,6 +869,26 @@ class LCAFunctions:
             p.process_type = o.ProcessType.UNIT_PROCESS
             if description:
                 p.description = description
+
+            # Set location if provided
+            if location:
+                loc_descriptors = self.client.get_descriptors(o.Location)
+                loc_ref = None
+                for ld in loc_descriptors:
+                    if ld.name == location or getattr(ld, "code", "") == location:
+                        loc_ref = ld
+                        break
+                if not loc_ref:
+                    # Try partial match
+                    for ld in loc_descriptors:
+                        if location.lower() in ld.name.lower():
+                            loc_ref = ld
+                            break
+                if loc_ref:
+                    p.location = o.Ref(
+                        id=loc_ref.id, name=loc_ref.name,
+                        ref_type=o.RefType.Location,
+                    )
 
             # Build exchanges
             exchange_objects = []
@@ -699,6 +925,11 @@ class LCAFunctions:
                     x.default_provider = o.Ref(
                         id=prov_id, ref_type=o.RefType.Process,
                     )
+
+                # Comment/description
+                comment = ex_def.get("comment") or ex_def.get("description")
+                if comment:
+                    x.description = comment
 
                 exchange_objects.append(x)
 
@@ -747,19 +978,13 @@ class LCAFunctions:
                      add_parameters: Optional[List[Dict]] = None,
                      update_parameters: Optional[Dict[str, float]] = None,
                      description: Optional[str] = None,
-                     category: Optional[str] = None) -> Dict:
+                     category: Optional[str] = None,
+                     location: Optional[str] = None) -> Dict:
         """
-        Edit an existing process in place. Fetches the process,
-        applies changes, and saves it back. No rebuild needed.
+        Edit an existing process in place.
 
-        add_exchanges: list of exchange dicts (same format as create_process)
-        update_exchanges: list of {flow_id, amount, formula, unit} dicts
-            Matches by flow_id, replaces amount/formula/unit on that exchange
-        remove_exchanges: list of flow_ids to remove from the process
-        add_parameters: list of {name, value, description} dicts
-        update_parameters: {param_name: new_value} for existing parameters
-        description: new description (replaces existing)
-        category: new category (replaces existing)
+        update_exchanges now supports provider_id in addition to
+        amount, formula, and unit.
         """
         try:
             process = self.client.get(o.Process, process_id)
@@ -777,6 +1002,26 @@ class LCAFunctions:
             if category is not None:
                 process.category = category
                 changes.append(f"category set to '{category}'")
+
+            # Update location
+            if location is not None:
+                loc_descriptors = self.client.get_descriptors(o.Location)
+                loc_ref = None
+                for ld in loc_descriptors:
+                    if ld.name == location or getattr(ld, "code", "") == location:
+                        loc_ref = ld
+                        break
+                if not loc_ref:
+                    for ld in loc_descriptors:
+                        if location.lower() in ld.name.lower():
+                            loc_ref = ld
+                            break
+                if loc_ref:
+                    process.location = o.Ref(
+                        id=loc_ref.id, name=loc_ref.name,
+                        ref_type=o.RefType.Location,
+                    )
+                    changes.append(f"location set to '{loc_ref.name}'")
 
             # Remove exchanges by flow_id
             if remove_exchanges and process.exchanges:
@@ -814,6 +1059,13 @@ class LCAFunctions:
                                     ex.unit = unit_ref
                                     changes.append(
                                         f"exchange '{ex.flow.name}' unit set to '{upd['unit']}'")
+                            if "provider_id" in upd:
+                                ex.default_provider = o.Ref(
+                                    id=upd["provider_id"],
+                                    ref_type=o.RefType.Process,
+                                )
+                                changes.append(
+                                    f"exchange '{ex.flow.name}' provider updated")
                             break
 
             # Update existing parameter values
@@ -1253,20 +1505,31 @@ class LCAFunctions:
                             ),
                         })
 
-            # Check: orphaned parameters (defined but never used in any formula)
-            all_formulas = " ".join(
+            # Check: orphaned parameters (defined but never used anywhere)
+            # Check both exchange formulas AND other parameter formulas,
+            # so indirect chains (switch → grid/solar → exchange) aren't
+            # flagged as orphaned.
+            all_exchange_formulas = " ".join(
                 ex.get("formula", "") or ""
                 for ex in proc.get("exchanges", [])
             )
+            all_param_formulas = " ".join(
+                (p.get("formula", "") or "") + " " + p.get("name", "")
+                for p in proc.get("parameters", [])
+                if not p.get("is_input", True)  # calculated params have formulas
+            )
+            all_formulas = all_exchange_formulas + " " + all_param_formulas
+
             for pname in param_names:
                 if pname not in all_formulas:
                     findings.append({
-                        "severity": "warning",
+                        "severity": "info",
                         "process": proc_name,
                         "check": "orphaned_parameter",
                         "message": (
                             f"Parameter '{pname}' (value: {param_names[pname].get('value')}) "
-                            f"is defined but not referenced in any exchange formula"
+                            f"may not be referenced in any formula (check manually "
+                            f"if it feeds other parameters indirectly)"
                         ),
                     })
 
@@ -1883,12 +2146,31 @@ class LCAFunctions:
                         "p95": sorted(values)[int(n * 0.95)] if n >= 20 else None,
                     }
 
-                return {
+                # Detect zero-variance (no uncertainty data in database)
+                all_zero_variance = all(
+                    stats[name]["std_dev"] == 0 for name in stats
+                )
+
+                output = {
                     "system": system.name,
                     "method": method.name,
                     "iterations": len(next(iter(distributions.values()), [])),
                     "statistics": stats,
                 }
+
+                if all_zero_variance:
+                    output["warning"] = (
+                        "All categories have zero variance across all iterations. "
+                        "This means the database processes have no uncertainty "
+                        "distributions defined on their exchanges. The Monte Carlo "
+                        "simulation ran correctly but sampled no distributions, so "
+                        "every iteration returned the same deterministic result. "
+                        "These statistics are not meaningful for uncertainty analysis. "
+                        "Check exchange-level uncertainty in the source processes "
+                        "before relying on these numbers."
+                    )
+
+                return output
 
             finally:
                 result.dispose()
@@ -2122,7 +2404,17 @@ class LCAFunctions:
             for name in scenario_names:
                 scenarios[name] = {}
                 for row in rows:
-                    scenarios[name][row["Parameter"]] = float(row[name])
+                    raw = row[name].strip().replace(",", ".")
+                    try:
+                        scenarios[name][row["Parameter"]] = float(raw)
+                    except (ValueError, TypeError):
+                        return {
+                            "error": (
+                                f"Cannot parse value '{row[name]}' for "
+                                f"parameter '{row['Parameter']}' in "
+                                f"scenario '{name}' as a number"
+                            ),
+                        }
 
             return {
                 "csv_path": csv_path,
@@ -2165,10 +2457,13 @@ class LCAFunctions:
         if "error" in calc_result:
             return calc_result
 
-        # Write results CSV
+        # Write results CSV - default to same folder as input
         if not output_path:
+            input_dir = os.path.dirname(os.path.abspath(csv_path))
             safe_name = method.name.replace(" ", "_").replace("/", "_")
-            output_path = f"scenario_results_{safe_name}.csv"
+            output_path = os.path.join(
+                input_dir, f"scenario_results_{safe_name}.csv"
+            )
 
         scenario_names = csv_data["scenario_names"]
         results = calc_result["results"]
@@ -2363,11 +2658,14 @@ class LCAFunctions:
         if "error" in calc_result:
             return calc_result
 
-        # Write results CSV
+        # Write results CSV - default to same folder as input
         if not output_path:
+            input_dir = os.path.dirname(os.path.abspath(csv_path))
             method = self._resolve_method(method_ref)
             safe_name = method.name.replace(" ", "_").replace("/", "_")
-            output_path = f"sensitivity_results_{safe_name}.csv"
+            output_path = os.path.join(
+                input_dir, f"sensitivity_results_{safe_name}.csv"
+            )
 
         baseline = calc_result["baseline"]
         sensitivity = calc_result["sensitivity"]

@@ -4,7 +4,7 @@ openLCA has an IPC server built in. The [scripting articles](https://below280.co
 
 The server is open source and available on GitHub.
 
-**[View the openLCA MCP Server on GitHub →](https://github.com/below280/openLCA-MCP-server)**
+**[View the openLCA MCP Server on GitHub →](https://github.com/Below280/B280-olca-MCP)**
 
 Below280 is the UK partner for openLCA. We built this server using patterns from our production LCA and EPD consulting work, tested against ecoinvent 3.10/3.11 and EN15804GD databases. The calculation patterns are the same ones used in the [scenario](https://below280.com/knowledge-base/openlca-scripting/) and [sensitivity](https://below280.com/knowledge-base/openlca-scripting/) scripts elsewhere in this knowledge base.
 
@@ -24,11 +24,13 @@ AI does not determine whether an LCA is methodologically valid. Functional units
 
 ## What it does
 
-The server exposes 29 tools across four areas.
+The server exposes 30 tools across four areas.
 
 ### Exploring the database
 
 The assistant can search for processes, flows, product systems, and impact methods by name. It can pull full process details (exchanges, parameters, providers, descriptions) and look up global or system-level parameters. When someone asks 'find me sodium hydroxide processes for a UK project', the assistant searches the database, reads the descriptions, and recommends the right dataset based on geography, technology, and data vintage.
+
+For chemicals with trade names or uncommon naming, the server can look up synonyms via PubChem (the US NIH's free chemistry database). If a search for 'caustic soda' returns nothing, the assistant can offer to check PubChem, discover that the database stores it as 'sodium hydroxide', and find the right process. This only runs when the user agrees to a deeper search.
 
 ### Building models
 
@@ -91,6 +93,8 @@ These are real prompts. Once the MCP is connected, type any of these into your M
 'Show me all the flows in my 00: Kerdyn Green folder' searches flows by category, returning the custom product and bridge flows that belong to a specific model.
 
 'What parameters does my A1 system have?' lists every parameter in a product system with its current value. 'Show me any parameters with electricity in the name' filters the list.
+
+'I need to find caustic soda in the database' triggers a normal search first. If results are thin, the assistant offers to check PubChem for synonyms, which would reveal that ecoinvent stores it as 'sodium hydroxide'. This deeper search only runs with the user's approval.
 
 ### Building a model from scratch
 
@@ -158,7 +162,13 @@ pip install mcp olca-ipc
 
 ### Get the server files
 
-Download `lca_functions.py` and `mcp_lca_server.py` from the [GitHub repository](https://github.com/below280/openLCA-MCP-server) and place them in the same folder.
+Clone the repository and install the dependencies:
+
+```bash
+git clone https://github.com/Below280/B280-olca-MCP.git
+cd B280-olca-MCP
+pip install -r requirements.txt
+```
 
 ### Claude Desktop
 
@@ -219,7 +229,7 @@ openLCA does not auto-refresh when changes come in through IPC. After using the 
 
 ### Explore
 
-`database_info`, `set_database_family`, `list_systems`, `list_methods`, `search_processes`, `search_flows`, `process_details`, `system_parameters`, `global_parameters`, `find_unit`
+`database_info`, `set_database_family`, `list_systems`, `list_methods`, `search_processes`, `search_flows`, `chemical_synonyms`, `process_details`, `system_parameters`, `global_parameters`, `find_unit`
 
 ### Build
 
@@ -251,7 +261,7 @@ We are releasing it now so people can try it, use it, and tell us what breaks. E
 
 If something goes wrong, or if the assistant does something unexpected, or if you find a workflow that ought to work but doesn't, please email **info@below280.com** with what you tried and what happened. Screenshots of the conversation are particularly useful.
 
-The [GitHub repository](https://github.com/below280/openLCA-MCP-server) is also open for issues and pull requests.
+The [GitHub repository](https://github.com/Below280/B280-olca-MCP) is also open for issues and pull requests.
 
 ## A note on validation
 

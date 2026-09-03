@@ -134,6 +134,24 @@ BEHAVIOUR RULES
    each candidate. Let them decide. The choice of background
    process often matters more than any parameter value.
 
+7. CHEMICAL SYNONYMS. If a chemical search returns few or no
+   results, offer to try a deeper search using PubChem synonyms.
+   Say: 'I didn't find much for [name]. Would you like me to
+   try a deeper search using PubChem chemical synonyms?' Only
+   call chemical_synonyms after the user agrees. Never call it
+   automatically. Common examples where this helps:
+     - caustic soda → sodium hydroxide
+     - MEK → methyl ethyl ketone → butanone
+     - PET → polyethylene terephthalate
+     - baking soda → sodium bicarbonate
+
+8. FINDING PROXIES. When asked to find the best proxy or match
+   for a material, search broadly, pull process_details on the
+   top candidates, and present them with geography, technology
+   description, and any notes about representativeness. Let the
+   user choose. If the material has trade names or synonyms,
+   offer the PubChem search as a fallback.
+
 FOLDER CONVENTIONS
 ------------------
 When building models, organise processes and flows in a folder
@@ -1055,8 +1073,9 @@ class OpenLCAMCPServer:
                             "output_path": {
                                 "type": "string",
                                 "description": (
-                                    "Path for the results CSV (optional, "
-                                    "auto-generated from method name if omitted)"
+                                    "Where to save the results CSV. Ask the user "
+                                    "which folder they want it in. If not specified, "
+                                    "saves next to the input CSV file."
                                 ),
                             },
                         },
@@ -1129,8 +1148,9 @@ class OpenLCAMCPServer:
                             "output_path": {
                                 "type": "string",
                                 "description": (
-                                    "Path for the results CSV (optional, "
-                                    "auto-generated from method name if omitted)"
+                                    "Where to save the results CSV. Ask the user "
+                                    "which folder they want it in. If not specified, "
+                                    "saves next to the input CSV file."
                                 ),
                             },
                         },
@@ -1140,9 +1160,9 @@ class OpenLCAMCPServer:
                 Tool(
                     name="search_processes",
                     description=(
-                        "Search for processes by name and/or category folder. "
-                        "Returns process IDs, names, and categories. Shows "
-                        "total_matches so you know if results were truncated."
+                        "Search for processes by name, category, and/or "
+                        "location. Use location_filter to find processes "
+                        "for a specific geography (e.g. 'GB', 'RER')."
                     ),
                     inputSchema={
                         "type": "object",
@@ -1154,6 +1174,10 @@ class OpenLCAMCPServer:
                             "category_filter": {
                                 "type": "string",
                                 "description": "Filter by category/folder path (optional)",
+                            },
+                            "location_filter": {
+                                "type": "string",
+                                "description": "Filter by location code e.g. 'GB', 'RER', 'US' (optional)",
                             },
                             "limit": {
                                 "type": "integer",
@@ -1193,6 +1217,35 @@ class OpenLCAMCPServer:
                     },
                 ),
                 Tool(
+                    name="chemical_synonyms",
+                    description=(
+                        "Look up chemical synonyms via PubChem (US NIH). "
+                        "Takes a common name, trade name, or IUPAC name and "
+                        "returns known synonyms, CAS number, and matching "
+                        "processes in the connected openLCA database. "
+                        "ONLY call this when: (a) the user explicitly asks "
+                        "for a deeper or synonym-based search, OR (b) a "
+                        "normal search_processes returned few results and "
+                        "the user approved trying synonyms. NEVER call this "
+                        "without the user's agreement."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "chemical_name": {
+                                "type": "string",
+                                "description": "Chemical name to look up (e.g. 'caustic soda', 'MEK', 'PET')",
+                            },
+                            "search_database": {
+                                "type": "boolean",
+                                "description": "Also search the openLCA database for matches (default: true)",
+                                "default": True,
+                            },
+                        },
+                        "required": ["chemical_name"],
+                    },
+                ),
+                Tool(
                     name="process_details",
                     description=(
                         "Get full details of a specific process: exchanges "
@@ -1221,12 +1274,9 @@ class OpenLCAMCPServer:
         }
 
         PRESENTATION_HINT = (
-            "ACTION REQUIRED: Present these results visually. If your "
-            "environment supports React artifacts, use recharts with "
-            "palette #2e0a4a, #12ebf2, #ff5c05 and include a category "
-            "selector and results table with CSV export. If not, use "
-            "a well-formatted table. Write at most two sentences of "
-            "summary. Do not narrate the numbers as prose."
+            "Formatting note: these results are best presented as a "
+            "chart or table rather than narrated as prose. A short "
+            "summary sentence followed by a visual is ideal."
         )
 
         @self.server.call_tool()
@@ -1349,7 +1399,8 @@ class OpenLCAMCPServer:
                 args.get("add_parameters"),
                 args.get("update_parameters"),
                 args.get("description"),
-                args.get("category"))
+                args.get("category"),
+                args.get("location"))
 
         elif name == "delete_entity":
             return self.lca.delete_entity(
@@ -1441,6 +1492,7 @@ class OpenLCAMCPServer:
             return self.lca.search_processes(
                 args["search_term"],
                 args.get("category_filter", ""),
+                args.get("location_filter", ""),
                 args.get("limit", 20))
 
         elif name == "search_flows":
@@ -1448,6 +1500,12 @@ class OpenLCAMCPServer:
                 args.get("search_term", ""),
                 args.get("category_filter", ""),
                 args.get("limit", 20))
+
+        elif name == "chemical_synonyms":
+            return self.lca.chemical_synonyms(
+                args["chemical_name"],
+                args.get("search_database", True),
+                args.get("max_synonyms", 20))
 
         elif name == "process_details":
             return self.lca.get_process_details(args["process_id"])

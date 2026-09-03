@@ -1,6 +1,6 @@
 # Tool Reference
 
-Complete reference for all 29 tools in the openLCA MCP Server. Each entry shows the tool name, what it does, required and optional inputs, and an example prompt that would trigger it.
+Complete reference for all 30 tools in the openLCA MCP Server. Each entry shows the tool name, what it does, required and optional inputs, and an example prompt that would trigger it.
 
 ## Explore
 
@@ -72,6 +72,18 @@ Search for flows by name and/or category folder.
 - `limit` (optional): maximum results, default 20
 
 **Example:** 'Show me the flows in my 00: Kerdyn Green folder'
+
+---
+
+### `chemical_synonyms`
+
+Look up chemical synonyms via PubChem (US NIH, free, no API key). Returns known synonyms, CAS number, and matching processes in the connected openLCA database. Only call when the user approves a deeper search.
+
+**Inputs:**
+- `chemical_name` (required): chemical name to look up (e.g. 'caustic soda', 'MEK', 'PET')
+- `search_database` (optional): also search openLCA for matches (default: true)
+
+**Example:** User searches for 'caustic soda', gets no results. Assistant asks 'Would you like me to try PubChem synonyms?' User says yes → `{"chemical_name": "caustic soda"}`
 
 ---
 
