@@ -1,2 +1,2 @@
-mcp
-olca-ipc
+mcp>=2.1,<3
+olca-ipc>=2.4.0,<3

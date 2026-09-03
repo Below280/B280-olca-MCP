@@ -228,4 +228,4 @@ Developed and tested with Claude Desktop. The server uses the MCP standard and s
 
 ## Licence
 
-MIT
+MPL-2.0
