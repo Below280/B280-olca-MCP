@@ -229,3 +229,7 @@ Developed and tested with Claude Desktop. The server uses the MCP standard and s
 ## Licence
 
 MPL-2.0
+
+## MCP
+
+mcp-name: io.github.below280/b280-olca-mcp
