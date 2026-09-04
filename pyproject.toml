@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "b280-olca-mcp"
+version = "1.11"
+description = "MCP server connecting AI assistants to openLCA via its IPC server"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Below280", email = "info@below280.com"}
+]
+keywords = ["openLCA", "LCA", "MCP", "life-cycle-assessment", "EPD"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "mcp>=2.1,<3",
+    "olca-ipc>=2.4.0,<3",
+]
+
+[project.urls]
+Homepage = "https://github.com/Below280/B280-olca-MCP"
+Documentation = "https://below280.com/knowledge-base/openlca-scripting/"
+Issues = "https://github.com/Below280/B280-olca-MCP/issues"
+
+[project.scripts]
+b280-olca-mcp = "b280_olca_mcp.server:main"
+
+[tool.setuptools.packages.find]
+include = ["b280_olca_mcp*"]

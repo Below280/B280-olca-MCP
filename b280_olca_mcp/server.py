@@ -22,7 +22,7 @@ import mcp.types as types
 from olca_ipc import Client
 import olca_schema as o
 
-from lca_functions import LCAFunctions
+from .functions import LCAFunctions
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("openLCA-MCP")
