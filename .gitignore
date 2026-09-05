@@ -1,5 +1,7 @@
 mcp-publisher.exe
 mcp-publisher.tar.gz
 dist/
+build/
 *.egg-info/
 __pycache__/
+kb_mcp_server.md

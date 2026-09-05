@@ -16,7 +16,7 @@ import sys
 
 from mcp.server.models import InitializationOptions
 from mcp.server import NotificationOptions, Server
-from mcp.types import Resource, Tool, TextContent
+from mcp.types import Resource, Tool, TextContent, ToolAnnotations
 import mcp.types as types
 
 from olca_ipc import Client
@@ -24,9 +24,64 @@ import olca_schema as o
 
 from .functions import LCAFunctions
 from .ipc_reference import IPC_PROTOCOL_REFERENCE
+from .openlca_resources import OPENLCA_RESOURCES
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("openLCA-MCP")
+
+# ── tool annotation presets ──────────────────────────────
+READONLY = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+
+WRITE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=False,
+)
+
+DESTRUCTIVE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=False,
+)
+
+CALCULATE = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+
+FILE_WRITE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+
+EXTERNAL = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+
+
+def validate_file_path(path: str, must_exist: bool = False) -> str:
+    """Resolve and validate a file path. Blocks path traversal."""
+    resolved = os.path.realpath(os.path.expanduser(path))
+    # Block obvious traversal attempts
+    if ".." in path:
+        raise ValueError(f"Path traversal not allowed: {path}")
+    if must_exist and not os.path.isfile(resolved):
+        raise FileNotFoundError(f"File not found: {resolved}")
+    return resolved
 
 # ── Knowledge base for Claude ────────────────────────────────
 ASSISTANT_INSTRUCTIONS = """
@@ -260,12 +315,332 @@ Search in this order:
    Scripting: https://below280.com/knowledge-base/openlca-scripting/
 2. openLCA Manual: https://greendelta.github.io/openLCA2-manual/introduction/index.html
 
+BUILDING AN EPD MODEL FROM AN LCI
+----------------------------------
+When a user asks to build an EPD, create an EPD model, or convert an
+LCI into an openLCA model for EPD purposes, follow this workflow.
+
+Step 1: Module mapping.
+  An EPD reports results by EN15804 lifecycle module. Before building
+  anything, the LCI data must be mapped to modules:
+
+    A1  Raw material supply
+    A2  Transport to factory
+    A3  Manufacturing
+    C1  Deconstruction/demolition
+    C2  Transport to waste processing
+    C3  Waste processing
+    C4  Disposal
+    D   Benefits and loads beyond the system boundary
+
+  Ask the user to confirm which LCI items belong to which module.
+  If the LCI document already groups items by module, use that.
+  If it does not, make a reasonable assignment based on the item
+  descriptions and flag every assumption: 'I have assigned [item]
+  to A1 because it appears to be a raw material. Please confirm.'
+
+  Common ambiguities to flag:
+    - Electricity: A1 (upstream) or A3 (manufacturing)?
+    - Internal transport: A2 or A3?
+    - Packaging materials: A1 or A3?
+    - Waste treatment of production waste: A3 or C3?
+
+  Do not proceed to building until the user has confirmed the
+  module assignments, or has explicitly said 'go ahead with your
+  best guess'.
+
+Step 2: Folder structure.
+  Create a folder structure that a verifier can read:
+
+    00: Project Name/
+    00: Project Name/Bridges
+    00: Project Name/A1
+    00: Project Name/A2
+    00: Project Name/A3
+    00: Project Name/C1
+    00: Project Name/C2
+    00: Project Name/C3
+    00: Project Name/C4
+    00: Project Name/D
+
+  Only create folders for modules that have data. If the LCI has
+  no C1 data, do not create an empty C1 folder.
+
+  Ask the user what to call the project folder.
+
+Step 3: Bridge processes.
+  For every background database connection (electricity, transport,
+  raw materials, waste treatment), create a bridge process in the
+  Bridges subfolder. Each bridge connects the foreground model to
+  one background process.
+
+  Use search_processes to find the right background process.
+  Present candidates and let the user choose (rule 6: ambiguous
+  flows). Name bridges clearly:
+    BRIDGE | UK grid electricity | kWh
+    BRIDGE | Lorry EURO6 | t*km
+    BRIDGE | Waste wood, open burning | kg
+
+Step 4: Module processes.
+  For each module that has data, create one process in the
+  corresponding subfolder. For example:
+
+    A1: Raw materials        (in 00: Project Name/A1)
+    A2: Transport to site    (in 00: Project Name/A2)
+    A3: Manufacturing        (in 00: Project Name/A3)
+
+  Each module process:
+    - Has a quantitative reference output (the declared unit or
+      an intermediate product flowing to the next module)
+    - Takes bridge processes as inputs for background connections
+    - Uses parameters for quantities where the LCI provides them
+    - Has amounts set from the LCI data
+
+  If the LCI provides quantities per declared unit (e.g. per 1 m3
+  of timber), use those directly. If quantities are annual totals,
+  ask the user for the annual production volume to calculate
+  per-unit values.
+
+Step 5: Product systems.
+  Create a product system for each module process. Place them in
+  matching folders or a dedicated systems folder:
+
+    00: Project Name/A1  (system for A1: Raw materials)
+    00: Project Name/A2  (system for A2: Transport to site)
+    etc.
+
+  Use prefer_defaults linking. Set the target amount and unit to
+  match the declared unit from the EPD scope.
+
+Step 6: Verify.
+  After building, run validate_system on each product system.
+  Then offer to run a test calculation with EN15804+A2 (EF 3.1)
+  to check the results are in a plausible range.
+
+  Flag the user that the model will need:
+    - Data quality (pedigree) entries on each exchange
+    - Process documentation fields filled in
+    - Review by an LCA practitioner before submission
+
+  These cannot be done through this tool and must be completed
+  in the openLCA GUI.
+
+Throughout this workflow, explain what you are doing and why.
+The user may not know EN15804 module codes. Use the full names
+(e.g. 'A1: Raw material supply') not just the codes.
+
 CALCULATION PATTERNS
 --------------------
 - Calculations target ProductSystem objects, never bare Processes.
 - Always dispose results after use.
 - ParameterRedef via CalculationSetup for scenarios/sensitivity.
 - Contribution analysis: get_tech_flows() then get_total_impacts_of(tf).
+
+STANDALONE SCRIPTS FOR REPRODUCIBILITY
+---------------------------------------
+After running scenario or sensitivity calculations through this MCP,
+offer the user the option to download standalone Python scripts that
+do the same thing without the MCP. Frame it as a reproducibility and
+cost-saving option:
+
+  'These results are ready. If you want to re-run this analysis
+  later without using AI tokens, Below280 publishes standalone
+  Python scripts that do the same calculations from a CSV file.
+  I can generate the CSV for you now, and the script runs directly
+  against openLCA with no AI in the loop.'
+
+The scripts are at:
+  https://github.com/Below280/openLCA-IPC-tools-python
+
+Specific tools and their standalone equivalents:
+
+  scenarios / scenarios_csv →
+    Script: openLCA-scenarios/B280_olca_scenarios.py
+    CSV format: first column 'Parameter', one column per scenario.
+    README: https://github.com/Below280/openLCA-IPC-tools-python/tree/main/openLCA-scenarios
+
+  sensitivity / sensitivity_csv →
+    Script: openLCA-sensitivity/B280_olca_sensitivity.py
+    CSV format: one parameter name per line.
+    README: https://github.com/Below280/openLCA-IPC-tools-python/tree/main/openLCA-sensitivity
+
+When to offer this:
+  - After completing a scenario or sensitivity calculation
+  - When the user asks about reproducibility or automation
+  - When the user mentions running the same analysis repeatedly
+  - When the user asks about saving costs or tokens
+
+What to offer:
+  1. Generate the CSV file they would need to run the standalone
+     script (use the parameter names and values from the calculation
+     that just ran).
+  2. Link to the script on GitHub with the specific README.
+  3. If they need something the standard script does not cover
+     (different output format, additional post-processing, custom
+     parameter grouping), offer to generate a custom Python script
+     based on the patterns in the repository. The scripts use
+     olca-ipc and olca-schema, same as this MCP server.
+
+Do not push this on every calculation. Mention it once after the
+first scenario or sensitivity run in a conversation, then only
+again if the user asks about reproducibility or re-running.
+
+The R package is also available for users who prefer R:
+  https://github.com/Below280/openLCA-IPC-tools-r
+  Install: remotes::install_github("Below280/openLCA-IPC-tools-r")
+
+HEAVY DATABASE OPERATIONS
+--------------------------
+Some operations modify hundreds or thousands of database entities.
+These are possible through this MCP but should almost always be
+done as standalone scripts instead. The MCP can generate the script.
+
+The guiding principle: if an operation would require more than
+about 10 tool calls, offer to generate a Python script instead.
+Frame it honestly:
+
+  'I can do this through the MCP, but it would involve [N]
+  individual operations and use a lot of tokens. A Python script
+  does the same thing in seconds with no token cost. Want me to
+  generate the script instead?'
+
+If the user says 'just do it', proceed. But make the offer first.
+
+DATABASE PARAMETERISATION
+  The prospective electricity script parameterises ecoinvent
+  electricity market processes so their technology shares can be
+  adjusted for future grid scenarios:
+    https://github.com/Below280/openLCA-IPC-tools-python/tree/main/prospective-electricity
+
+  The same approach works for parameterising any set of processes
+  in the database: transport modes, material mixes, energy sources.
+  The pattern is:
+    1. Find the target process (e.g. a market mix)
+    2. Read its exchanges and current amounts
+    3. Create a parameter for each exchange amount
+    4. Set the parameter default to the original value
+    5. Replace the fixed amount with the parameter name
+    6. Save the modified process
+
+  WARNING: This permanently modifies database processes. Changes
+  are IRREVERSIBLE without restoring from a backup. Always tell
+  the user:
+
+    'This will permanently modify [N] processes in your database.
+    The original fixed values will be replaced with parameters.
+    This cannot be undone without restoring from a database backup.
+    I strongly recommend making a backup first. Shall I generate
+    a script you can review before running, or do you want me to
+    proceed directly?'
+
+  The script route is strongly preferred because:
+    - The user can review every change before it executes
+    - It runs in seconds with no token cost
+    - It can be version-controlled and re-run on fresh databases
+    - It documents exactly what was changed
+
+  If generating a custom parameterisation script, base it on the
+  patterns in B280_olca_elec_parameterise.py. It uses olca-ipc
+  and olca-schema, reads the existing process exchanges, creates
+  parameters with the original values as defaults, and saves the
+  modified processes.
+
+OTHER HEAVY OPERATIONS where scripting is preferred:
+  - Batch-creating dozens of processes from a spreadsheet
+  - Renaming or recategorising large numbers of entities
+  - Extracting data quality entries across an entire database
+  - Building product systems for many processes at once
+  - Any operation that loops over most entities in the database
+
+For all of these, the MCP can generate a working Python script
+using olca-ipc patterns from the Below280 repository. The user
+runs it locally, reviews the output, and keeps the script for
+reproducibility.
+
+FEEDBACK
+--------
+If something went notably well or notably wrong during a session,
+offer once to help the user send feedback to Below280. Do not
+push this. A single sentence at the end of the interaction:
+
+  'If you would like to let Below280 know about [this issue /
+  how this went], I can draft a short feedback report for you
+  to send.'
+
+Only offer when there is something specific to report: a bug,
+an unexpected error, a workflow that worked particularly well,
+or a feature gap. Do not offer on routine successful calculations.
+
+Feedback channels:
+  GitHub issues: https://github.com/Below280/B280-olca-MCP/issues
+  Email: mcp-feedback@below280.com
+
+If the user accepts, draft a short report (no more than 15 lines)
+containing:
+  - What the user asked the MCP to do
+  - Which tools or IPC methods were involved
+  - Whether it succeeded or failed
+  - Any error messages or unexpected behaviour
+  - Suggested improvement (if applicable)
+  - Steps to reproduce (if a bug)
+
+Before presenting the draft, strip out:
+  - Company and product names
+  - Database entity names that could identify the project
+  - Inventory quantities and impact results
+  - File paths, usernames, and system details
+  - Any licensed database content
+
+Replace stripped content with [REDACTED] or generic placeholders.
+Present the draft to the user for review. They copy it and send
+it themselves. The MCP does not send anything automatically.
+
+HELPING USERS CONNECT FROM OTHER LANGUAGES
+--------------------------------------------
+The IPC protocol reference (lca://knowledge/ipc-protocol) contains
+every JSON-RPC method, parameter format, and response structure.
+When a user asks about connecting to openLCA from any programming
+language, read that resource and use it to generate working code.
+
+Existing tested implementations to reference:
+  Python (official): pip install olca-ipc
+  R (Below280):      https://github.com/Below280/openLCA-IPC-tools-r
+  Fortran (Below280): https://github.com/Below280/openLCA-IPC-tools-fortran
+
+For Python, direct the user to the official olca-ipc package.
+For R, direct them to the Below280 olcar package.
+For Fortran, direct them to the Below280 Fortran client.
+
+For any other language (Go, Rust, JavaScript, Julia, C#, etc.):
+  1. Read the IPC protocol reference resource.
+  2. Generate client code using the protocol spec.
+  3. Use the R or Fortran implementations as architectural
+     patterns: both are thin HTTP clients that POST JSON-RPC
+     requests and parse responses. The R client uses httr2,
+     the Fortran client uses system curl.
+  4. Mark all generated code clearly as EXPERIMENTAL:
+
+     'This code is generated from the openLCA IPC protocol
+     specification and has not been tested against a live
+     server. The protocol itself is stable and well-documented,
+     but this specific implementation needs testing. Start with
+     a simple call (list processes) and verify the response
+     before building on it.'
+
+  5. Start with the basics: connect, list descriptors, run a
+     calculation, get results, dispose. These five operations
+     cover most use cases and validate that the client works.
+
+Key implementation notes to include when generating code:
+  - The protocol is HTTP POST to localhost:8080, Content-Type
+    application/json. No auth, no sessions.
+  - JSON field names use @id and @type (JSON-LD). Most JSON
+    libraries handle these as ordinary keys. json-fortran
+    needed a workaround (documented in the Fortran repo).
+  - Calculations are async: start with result/calculate, poll
+    result/state until ready, then query results, then dispose.
+  - result/dispose is mandatory. Leaked results consume server
+    memory until restart.
 """
 
 
@@ -325,6 +700,16 @@ class OpenLCAMCPServer:
                     ),
                     mimeType="text/plain",
                 ),
+                Resource(
+                    uri="lca://knowledge/openlca-resources",
+                    name="openLCA Resources",
+                    description=(
+                        "Links to databases, documentation, forums, tutorials, "
+                        "and training courses. Use when someone asks where to "
+                        "learn openLCA, find data, or get help."
+                    ),
+                    mimeType="text/plain",
+                ),
             ]
 
         @self.server.read_resource()
@@ -337,6 +722,10 @@ class OpenLCAMCPServer:
 
             if uri == "lca://knowledge/ipc-protocol":
                 return IPC_PROTOCOL_REFERENCE
+
+            if uri == "lca://knowledge/openlca-resources":
+                return OPENLCA_RESOURCES
+
             return f"Unknown resource: {uri}"
 
         @self.server.list_tools()
@@ -351,6 +740,7 @@ class OpenLCAMCPServer:
                         "database family (ecoinvent or FLCAC)."
                     ),
                     inputSchema={"type": "object", "properties": {}},
+                    annotations=READONLY,
                 ),
                 Tool(
                     name="set_database_family",
@@ -373,6 +763,9 @@ class OpenLCAMCPServer:
                         },
                         "required": ["family"],
                     },
+                    annotations=WRITE,
+                
+                    annotations=WRITE,
                 ),
                 Tool(
                     name="list_systems",
@@ -390,6 +783,8 @@ class OpenLCAMCPServer:
                             },
                         },
                     },
+                
+                    annotations=READONLY,
                 ),
                 Tool(
                     name="list_methods",
@@ -406,6 +801,8 @@ class OpenLCAMCPServer:
                             },
                         },
                     },
+                
+                    annotations=READONLY,
                 ),
                 Tool(
                     name="system_parameters",
@@ -428,6 +825,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["system"],
                     },
+                
+                    annotations=READONLY,
                 ),
                 Tool(
                     name="global_parameters",
@@ -446,6 +845,8 @@ class OpenLCAMCPServer:
                             },
                         },
                     },
+                
+                    annotations=READONLY,
                 ),
                 # ── model building tools ─────────────────
                 Tool(
@@ -465,6 +866,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["unit_name"],
                     },
+                
+                    annotations=READONLY,
                 ),
                 Tool(
                     name="create_flow",
@@ -499,6 +902,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["name", "unit"],
                     },
+                
+                    annotations=WRITE,
                 ),
                 Tool(
                     name="create_bridge",
@@ -538,6 +943,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["name", "unit"],
                     },
+                
+                    annotations=WRITE,
                 ),
                 Tool(
                     name="create_process",
@@ -621,6 +1028,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["name", "category", "exchanges"],
                     },
+                
+                    annotations=WRITE,
                 ),
                 Tool(
                     name="edit_process",
@@ -701,6 +1110,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["process_id"],
                     },
+                
+                    annotations=WRITE,
                 ),
                 Tool(
                     name="delete_entity",
@@ -728,6 +1139,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["entity_type", "entity_id"],
                     },
+                
+                    annotations=DESTRUCTIVE,
                 ),
                 # ── model extraction and audit ───────────
                 Tool(
@@ -753,6 +1166,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["category"],
                     },
+                
+                    annotations=READONLY,
                 ),
                 Tool(
                     name="audit_model",
@@ -779,6 +1194,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["category"],
                     },
+                
+                    annotations=READONLY,
                 ),
                 Tool(
                     name="validate_system",
@@ -805,6 +1222,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["system"],
                     },
+                
+                    annotations=READONLY,
                 ),
                 Tool(
                     name="create_system",
@@ -850,6 +1269,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["process"],
                     },
+                
+                    annotations=WRITE,
                 ),
                 Tool(
                     name="get_system_links",
@@ -879,6 +1300,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["system"],
                     },
+                
+                    annotations=READONLY,
                 ),
                 Tool(
                     name="calculate",
@@ -905,6 +1328,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["system", "method"],
                     },
+                
+                    annotations=CALCULATE,
                 ),
                 Tool(
                     name="contribution_analysis",
@@ -944,6 +1369,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["system", "method"],
                     },
+                
+                    annotations=CALCULATE,
                 ),
                 Tool(
                     name="monte_carlo",
@@ -972,6 +1399,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["system", "method"],
                     },
+                
+                    annotations=CALCULATE,
                 ),
                 Tool(
                     name="inventory_flows",
@@ -1002,6 +1431,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["system", "method"],
                     },
+                
+                    annotations=CALCULATE,
                 ),
                 Tool(
                     name="data_quality",
@@ -1024,6 +1455,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["process_id"],
                     },
+                
+                    annotations=READONLY,
                 ),
                 Tool(
                     name="scenarios",
@@ -1059,6 +1492,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["system", "method", "scenarios"],
                     },
+                
+                    annotations=CALCULATE,
                 ),
                 Tool(
                     name="scenarios_csv",
@@ -1095,6 +1530,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["system", "method", "csv_path"],
                     },
+                
+                    annotations=FILE_WRITE,
                 ),
                 Tool(
                     name="sensitivity",
@@ -1129,6 +1566,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["system", "method", "parameters"],
                     },
+                
+                    annotations=CALCULATE,
                 ),
                 Tool(
                     name="sensitivity_csv",
@@ -1170,6 +1609,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["system", "method", "csv_path"],
                     },
+                
+                    annotations=FILE_WRITE,
                 ),
                 Tool(
                     name="search_processes",
@@ -1201,6 +1642,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["search_term"],
                     },
+                
+                    annotations=READONLY,
                 ),
                 Tool(
                     name="search_flows",
@@ -1229,6 +1672,8 @@ class OpenLCAMCPServer:
                             },
                         },
                     },
+                
+                    annotations=READONLY,
                 ),
                 Tool(
                     name="chemical_synonyms",
@@ -1258,6 +1703,8 @@ class OpenLCAMCPServer:
                         },
                         "required": ["chemical_name"],
                     },
+                
+                    annotations=EXTERNAL,
                 ),
                 Tool(
                     name="process_details",
@@ -1276,6 +1723,34 @@ class OpenLCAMCPServer:
                         },
                         "required": ["process_id"],
                     },
+                
+                    annotations=READONLY,
+                ),
+                Tool(
+                    name="help",
+                    description=(
+                        "Show what this MCP server can do, grouped by workflow. "
+                        "Call this when the user asks 'what can you do', 'help', "
+                        "'what tools do you have', or seems unsure where to start."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "topic": {
+                                "type": "string",
+                                "description": (
+                                    "Optional: filter to a specific area. "
+                                    "One of: explore, build, audit, calculate, "
+                                    "scripting, epd, connect"
+                                ),
+                                "enum": [
+                                    "explore", "build", "audit", "calculate",
+                                    "scripting", "epd", "connect"
+                                ],
+                            },
+                        },
+                    },
+                    annotations=READONLY,
                 ),
             ]
 
@@ -1481,11 +1956,13 @@ class OpenLCAMCPServer:
                 args["system"], args["method"], args["scenarios"])
 
         elif name == "scenarios_csv":
+            csv_path = validate_file_path(args["csv_path"], must_exist=True)
+            output_path = validate_file_path(args["output_path"]) if args.get("output_path") else ""
             return self.lca.run_scenarios_csv(
                 args["system"],
                 args["method"],
-                args["csv_path"],
-                args.get("output_path", ""))
+                csv_path,
+                output_path)
 
         elif name == "sensitivity":
             return self.lca.run_sensitivity(
@@ -1495,12 +1972,14 @@ class OpenLCAMCPServer:
                 args.get("variation_pct", 20.0))
 
         elif name == "sensitivity_csv":
+            csv_path = validate_file_path(args["csv_path"], must_exist=True)
+            output_path = validate_file_path(args["output_path"]) if args.get("output_path") else ""
             return self.lca.run_sensitivity_csv(
                 args["system"],
                 args["method"],
-                args["csv_path"],
+                csv_path,
                 args.get("variation_pct", 20.0),
-                args.get("output_path", ""))
+                output_path)
 
         elif name == "search_processes":
             return self.lca.search_processes(
@@ -1524,8 +2003,128 @@ class OpenLCAMCPServer:
         elif name == "process_details":
             return self.lca.get_process_details(args["process_id"])
 
+        elif name == "help":
+            return self._get_help(args.get("topic"))
+
         else:
             return {"error": f"Unknown tool: {name}"}
+
+    def _get_help(self, topic: str = None) -> dict:
+        """Return capability summary grouped by workflow."""
+        sections = {
+            "explore": {
+                "title": "Explore your database",
+                "description": "Search and inspect what is in the connected openLCA database.",
+                "tools": [
+                    "database_info: overview and entity counts",
+                    "list_systems: find product systems",
+                    "list_methods: find impact assessment methods",
+                    "search_processes: find processes by name, location, or category",
+                    "search_flows: find flows by name or folder",
+                    "process_details: full info on one process",
+                    "system_parameters: parameters in a product system",
+                    "global_parameters: database-level parameters",
+                    "find_unit: look up units and flow properties",
+                    "chemical_synonyms: PubChem synonym search to find database matches",
+                ],
+            },
+            "build": {
+                "title": "Build a model",
+                "description": "Create processes, flows, bridges, and product systems. Changes are saved to the database.",
+                "tools": [
+                    "create_flow: make a product, waste, or elementary flow",
+                    "create_bridge: make a bridge flow and process linking to a background database",
+                    "create_process: build a process with exchanges and parameters",
+                    "edit_process: modify an existing process",
+                    "create_system: create a product system from a process",
+                    "delete_entity: remove a process, flow, or system (irreversible, requires confirmation)",
+                ],
+            },
+            "audit": {
+                "title": "Check and review a model",
+                "description": "Validate structure, extract model data, and assess data quality.",
+                "tools": [
+                    "validate_system: structural validation of a product system",
+                    "audit_model: check all processes in a model folder",
+                    "extract_model: pull everything from a folder for inspection",
+                    "get_system_links: see which providers are linked in a system",
+                    "data_quality: pedigree matrices and uncertainty for a process",
+                ],
+            },
+            "calculate": {
+                "title": "Run calculations",
+                "description": "Impact assessment, scenarios, sensitivity, Monte Carlo, and contribution analysis.",
+                "tools": [
+                    "calculate: baseline impact assessment",
+                    "contribution_analysis: which processes drive each impact category",
+                    "scenarios: compare parameter variations",
+                    "sensitivity: vary parameters individually (+/- percentage)",
+                    "monte_carlo: uncertainty simulation",
+                    "inventory_flows: raw elementary flows (LCI level)",
+                    "scenarios_csv: run scenarios from a CSV file",
+                    "sensitivity_csv: run sensitivity from a CSV file",
+                ],
+            },
+            "scripting": {
+                "title": "Standalone scripts and automation",
+                "description": (
+                    "For repeated analyses, standalone Python scripts run "
+                    "without AI tokens. I can generate CSVs and scripts, or "
+                    "point you to tested tools on GitHub."
+                ),
+                "resources": [
+                    "Scenarios script: github.com/Below280/openLCA-IPC-tools-python/tree/main/openLCA-scenarios",
+                    "Sensitivity script: github.com/Below280/openLCA-IPC-tools-python/tree/main/openLCA-sensitivity",
+                    "Prospective electricity: github.com/Below280/openLCA-IPC-tools-python/tree/main/prospective-electricity",
+                    "R client: github.com/Below280/openLCA-IPC-tools-r",
+                    "Fortran client: github.com/Below280/openLCA-IPC-tools-fortran",
+                ],
+            },
+            "epd": {
+                "title": "Build an EPD model",
+                "description": (
+                    "I can build an EN15804 EPD model from an LCI document. "
+                    "The workflow maps items to lifecycle modules (A1-D), "
+                    "creates the folder structure, bridge processes, module "
+                    "processes, and product systems. Ask me to 'build an EPD' "
+                    "to start."
+                ),
+            },
+            "connect": {
+                "title": "Connect from other languages",
+                "description": (
+                    "I have the full IPC protocol specification and can "
+                    "generate client code for any language. Tested clients "
+                    "exist for Python, R, and Fortran. For other languages "
+                    "(Go, Rust, JavaScript, Julia, etc.) I can generate "
+                    "experimental code from the protocol spec."
+                ),
+            },
+        }
+
+        if topic and topic in sections:
+            return {
+                "topic": topic,
+                **sections[topic],
+                "note": (
+                    "This server carries detailed operational instructions "
+                    "which use significant context. For lighter interactions, "
+                    "simple explore and calculate queries are the most "
+                    "token-efficient."
+                ),
+            }
+
+        return {
+            "capabilities": {k: v["title"] for k, v in sections.items()},
+            "total_tools": 31,
+            "detail": "Call help with a topic for more detail: explore, build, audit, calculate, scripting, epd, or connect.",
+            "note": (
+                "This server carries detailed operational instructions "
+                "which use significant context. For lighter interactions, "
+                "simple explore and calculate queries are the most "
+                "token-efficient."
+            ),
+        }
 
     # ── server lifecycle ─────────────────────────────────────
 
@@ -1564,6 +2163,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
