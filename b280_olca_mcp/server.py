@@ -23,6 +23,7 @@ from olca_ipc import Client
 import olca_schema as o
 
 from .functions import LCAFunctions
+from .ipc_reference import IPC_PROTOCOL_REFERENCE
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("openLCA-MCP")
@@ -313,6 +314,17 @@ class OpenLCAMCPServer:
                     ),
                     mimeType="text/plain",
                 ),
+                Resource(
+                    uri="lca://knowledge/ipc-protocol",
+                    name="openLCA IPC Protocol Reference",
+                    description=(
+                        "Complete JSON-RPC protocol specification for openLCA IPC. "
+                        "All 60 methods with parameter formats, response structures, "
+                        "curl examples, and known gotchas. Use this to help users "
+                        "connect to openLCA from any programming language."
+                    ),
+                    mimeType="text/plain",
+                ),
             ]
 
         @self.server.read_resource()
@@ -323,6 +335,8 @@ class OpenLCAMCPServer:
             if uri == "lca://knowledge/instructions":
                 return ASSISTANT_INSTRUCTIONS
 
+            if uri == "lca://knowledge/ipc-protocol":
+                return IPC_PROTOCOL_REFERENCE
             return f"Unknown resource: {uri}"
 
         @self.server.list_tools()
@@ -1550,3 +1564,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+

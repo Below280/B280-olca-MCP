@@ -1,0 +1,45 @@
+name: Check IPC Protocol Coverage
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Every Monday at 9am UTC
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  check-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install olca-ipc
+        run: pip install olca-ipc
+
+      - name: Extract methods and compare
+        run: python .github/scripts/check_ipc_coverage.py
+
+      - name: Create issue if drift detected
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('/tmp/ipc_drift_report.txt', 'utf8');
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'ipc-drift'
+            });
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: 'IPC protocol reference has fallen behind olca-ipc',
+                body: body,
+                labels: ['ipc-drift']
+              });
+            }
