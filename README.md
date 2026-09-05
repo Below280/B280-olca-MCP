@@ -151,3 +151,5 @@ Check out [community projects](docs/community-projects.md) to explore notable re
 ## More documentation
 
 See the [documentation](./docs) for more details if your question has not been answered here!
+
+mcp-name: io.github.Below280/b280-olca-mcp

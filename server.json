@@ -1,18 +1,18 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.below280/b280-olca-mcp",
+  "name": "io.github.Below280/b280-olca-mcp",
   "title": "openLCA MCP Server",
-  "description": "30-tool MCP server connecting AI assistants to openLCA via its IPC server. Covers database exploration, model building, auditing, and LCIA calculations across ecoinvent, EN15804GD, and FLCAC databases.",
+  "description": "Connect AI assistants to openLCA. 30 tools for database search, model building, and LCIA.",
   "repository": {
     "url": "https://github.com/Below280/B280-olca-MCP",
     "source": "github"
   },
-  "version": "1.11",
+  "version": "1.11.1",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "b280-olca-mcp",
-      "version": "1.11",
+      "version": "1.11.1",
       "transport": {
         "type": "stdio"
       }
