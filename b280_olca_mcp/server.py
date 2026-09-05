@@ -670,9 +670,8 @@ class OpenLCAMCPServer:
 
     def setup_handlers(self):
 
-        @self.server.list_resources()
-        async def handle_list_resources() -> list[Resource]:
-            return [
+        async def handle_list_resources(ctx, params):
+            return types.ListResourcesResult(resources=[
                 Resource(
                     uri="lca://database/info",
                     name="Database Information",
@@ -710,27 +709,40 @@ class OpenLCAMCPServer:
                     ),
                     mimeType="text/plain",
                 ),
-            ]
+            ])
 
-        @self.server.read_resource()
-        async def handle_read_resource(uri: str) -> str:
+        self.server.add_request_handler(
+            "resources/list", types.PaginatedRequestParams, handle_list_resources
+        )
+
+        async def handle_read_resource(ctx, params):
+            uri = str(params.uri)
+
             if uri == "lca://database/info" and self.lca:
-                return json.dumps(self.lca.get_database_info(), indent=2)
+                text = json.dumps(self.lca.get_database_info(), indent=2)
+            elif uri == "lca://knowledge/instructions":
+                text = ASSISTANT_INSTRUCTIONS
+            elif uri == "lca://knowledge/ipc-protocol":
+                text = IPC_PROTOCOL_REFERENCE
+            elif uri == "lca://knowledge/openlca-resources":
+                text = OPENLCA_RESOURCES
+            else:
+                text = f"Unknown resource: {uri}"
 
-            if uri == "lca://knowledge/instructions":
-                return ASSISTANT_INSTRUCTIONS
+            return types.ReadResourceResult(
+                contents=[
+                    types.TextResourceContents(
+                        uri=params.uri, mimeType="text/plain", text=text
+                    )
+                ]
+            )
 
-            if uri == "lca://knowledge/ipc-protocol":
-                return IPC_PROTOCOL_REFERENCE
+        self.server.add_request_handler(
+            "resources/read", types.ReadResourceRequestParams, handle_read_resource
+        )
 
-            if uri == "lca://knowledge/openlca-resources":
-                return OPENLCA_RESOURCES
-
-            return f"Unknown resource: {uri}"
-
-        @self.server.list_tools()
-        async def handle_list_tools() -> list[Tool]:
-            return [
+        async def handle_list_tools(ctx, params):
+            return types.ListToolsResult(tools=[
                 Tool(
                     name="database_info",
                     description=(
@@ -763,8 +775,6 @@ class OpenLCAMCPServer:
                         },
                         "required": ["family"],
                     },
-                    annotations=WRITE,
-                
                     annotations=WRITE,
                 ),
                 Tool(
@@ -1752,7 +1762,11 @@ class OpenLCAMCPServer:
                     },
                     annotations=READONLY,
                 ),
-            ]
+            ])
+
+        self.server.add_request_handler(
+            "tools/list", types.PaginatedRequestParams, handle_list_tools
+        )
 
         # ── tool dispatch ────────────────────────────────────
 
@@ -1768,16 +1782,15 @@ class OpenLCAMCPServer:
             "summary sentence followed by a visual is ideal."
         )
 
-        @self.server.call_tool()
-        async def handle_call_tool(
-            name: str, arguments: dict
-        ) -> list[types.TextContent]:
+        async def handle_call_tool(ctx, params):
+            name = params.name
+            arguments = params.arguments or {}
 
             if not self.lca:
-                return [TextContent(
+                return types.CallToolResult(content=[TextContent(
                     type="text",
                     text="openLCA is not connected. Check the IPC server is running.",
-                )]
+                )])
 
             try:
                 result = self._dispatch(name, arguments)
@@ -1803,27 +1816,31 @@ class OpenLCAMCPServer:
                         f"{result.get('system', result.get('method', '?'))}."
                     )
 
-                    return [TextContent(
+                    return types.CallToolResult(content=[TextContent(
                         type="text",
                         text=(
                             f"{PRESENTATION_HINT}\n\n"
                             f"{summary}\n\n"
                             f"{json.dumps(result, separators=(',', ':'))}"
                         ),
-                    )]
+                    )])
                 else:
                     # Exploration/build tools: readable JSON
-                    return [TextContent(
+                    return types.CallToolResult(content=[TextContent(
                         type="text",
                         text=json.dumps(result, indent=2),
-                    )]
+                    )])
 
             except Exception as e:
                 logger.error(f"Tool {name} failed: {e}", exc_info=True)
-                return [TextContent(
+                return types.CallToolResult(content=[TextContent(
                     type="text",
                     text=json.dumps({"error": str(e), "tool": name}),
-                )]
+                )])
+
+        self.server.add_request_handler(
+            "tools/call", types.CallToolRequestParams, handle_call_tool
+        )
 
     def _dispatch(self, name: str, args: dict) -> dict:
         """Route tool calls to LCA functions."""
