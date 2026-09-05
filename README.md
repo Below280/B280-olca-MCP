@@ -1,155 +1,236 @@
-# MCP Registry
+# openLCA MCP Server
 
-The MCP registry provides MCP clients with a list of MCP servers, like an app store for MCP servers.
+An MCP (Model Context Protocol) server that connects AI assistants to a running openLCA instance. Developed and tested with Claude Desktop; compatible with any MCP client that supports stdio transport. Built by [Below280](https://below280.com), the UK partner for openLCA.
 
-[**📤 Publish my MCP server**](docs/modelcontextprotocol-io/quickstart.mdx) | [**⚡️ Live API docs**](https://registry.modelcontextprotocol.io/docs) | [**👀 Ecosystem vision**](docs/design/ecosystem-vision.md) | 📖 **[Full documentation](./docs)**
+The server exposes 30 tools covering the full LCA workflow: exploring databases, building and editing models, running calculations (scenarios, sensitivity, Monte Carlo, contribution analysis), auditing and validating models, and extracting data quality assessments. All calculation patterns are tested against production ecoinvent databases.
 
-## Development Status
+The server works with both ecoinvent-family databases (ecoinvent, EN15804GD, HiQLCD, BAFU) and FLCAC-family databases (LCA Commons, US LCI, USEEIO). It asks which family you are using, or auto-detects from the flow property names.
 
-**2025-10-24 update**: The Registry API has entered an **API freeze (v0.1)** 🎉. For the next month or more, the API will remain stable with no breaking changes, allowing integrators to confidently implement support. This freeze applies to v0.1 while development continues on v0. We'll use this period to validate the API in real-world integrations and gather feedback to shape v1 for general availability. Thank you to everyone for your contributions and patience—your involvement has been key to getting us here!
+## What it does
 
-**2025-09-08 update**: The registry has launched in preview 🎉 ([announcement blog post](https://blog.modelcontextprotocol.io/posts/2025-09-08-mcp-registry-preview/)). While the system is now more stable, this is still a preview release and breaking changes or data resets may occur. A general availability (GA) release will follow later. We'd love your feedback in [GitHub discussions](https://github.com/modelcontextprotocol/registry/discussions/new?category=ideas) or in the [#registry-dev Discord](https://discord.com/channels/1358869848138059966/1369487942862504016) ([joining details here](https://modelcontextprotocol.io/community/communication)).
+Someone using this MCP can say things like:
 
-Registry Working Group:
-- **Radoslav (Rado) Dimitrov** (Stacklok) [@rdimitrov](https://github.com/rdimitrov) - WG Lead
-- **Tadas Antanavicius** (PulseMCP) [@tadasant](https://github.com/tadasant)
-- **Bob Dickinson** (TeamSpark) [@BobDickinson](https://github.com/BobDickinson)
-- **Preeti (Pree) Dewani** (Ravenmail) [@pree-dew](https://github.com/pree-dew)
+- 'Make me a model with 34 kWh UK electricity, 5 kg sodium hydroxide, and 34 kWh steam'
+- 'Run two scenarios, one with transport at 100 km and one at 500 km'
+- 'Which processes contribute most to climate change in my system?'
+- 'Vary the electricity and PET resin parameters by 10%'
+- 'Validate my product system and check if the linking is correct'
+- 'Run 1000 Monte Carlo iterations and show me the uncertainty'
 
-## Contributing
+The AI assistant handles the conversation, builds the tool calls, and presents results in a branded dashboard with bar charts, radar profiles, tornado diagrams, and exportable tables.
 
-We use multiple channels for collaboration - see [modelcontextprotocol.io/community/communication](https://modelcontextprotocol.io/community/communication).
+## Data security
 
-Often (but not always) ideas flow through this pipeline:
+The MCP server runs locally and communicates with openLCA on localhost. The AI client (Claude Desktop or equivalent) sends tool results to its provider's servers for processing. This means process names, exchange data, parameter values, and impact results from your database will be in the conversation.
 
-- **[Discord](https://modelcontextprotocol.io/community/communication)** - Real-time community discussions
-- **[Discussions](https://github.com/modelcontextprotocol/registry/discussions)** - Propose and discuss product/technical requirements
-- **[Issues](https://github.com/modelcontextprotocol/registry/issues)** - Track well-scoped technical work  
-- **[Pull Requests](https://github.com/modelcontextprotocol/registry/pulls)** - Contribute work towards issues
+**Do not connect a confidential client database through a personal or free-tier AI account.** These accounts may use conversation data for model training. Use a business or enterprise account with appropriate data retention controls, and check your provider's current data processing terms before connecting any database containing sensitive information.
 
-### Quick start:
+The MCP server has no data filtering or redaction. Everything in your database is accessible to the connected AI client.
 
-#### Pre-requisites
+## Requirements
 
-- **Docker**
-- **Go 1.24.x**
-- **ko** - Container image builder for Go ([installation instructions](https://ko.build/install/))
-- **golangci-lint v2.4.0**
-
-#### Running the server
+- openLCA 2.x with IPC server running (Tools > Developer Tools > IPC Server, port 8080)
+- Python 3.10+
+- The `mcp` and `olca-ipc` packages
+- An MCP-compatible desktop application
 
 ```bash
-# Start full development environment
-make dev-compose
+pip install mcp olca-ipc
 ```
 
-This starts the registry at [`localhost:8080`](http://localhost:8080) with PostgreSQL. The database uses ephemeral storage and is reset each time you restart the containers, ensuring a clean state for development and testing.
+## Setup
 
-**Note:** The registry uses [ko](https://ko.build) to build container images. The `make dev-compose` command automatically builds the registry image with ko and loads it into your local Docker daemon before starting the services.
+### 1. Copy the files
 
-By default, the registry seeds from the production API with a filtered subset of servers (to keep startup fast). This ensures your local environment mirrors production behavior and all seed data passes validation. For offline development you can seed from a file without validation with `MCP_REGISTRY_SEED_FROM=data/seed.json MCP_REGISTRY_ENABLE_REGISTRY_VALIDATION=false make dev-compose`.
-
-The setup can be configured with environment variables in [docker-compose.yml](./docker-compose.yml) - see [.env.example](./.env.example) for a reference.
-
-<details>
-<summary>Alternative: Running a pre-built Docker image</summary>
-
-Pre-built Docker images are automatically published to GitHub Container Registry. Note that the image does not bundle PostgreSQL, so you need to run your own and point the registry at it via `MCP_REGISTRY_DATABASE_URL` (see [docker-compose.yml](./docker-compose.yml) for a working example):
-
-```bash
-# Run latest stable release
-docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:latest
-
-# Run latest from main branch (continuous deployment)
-docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:main
-
-# Run specific release version
-docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:v1.0.0
-
-# Run development build from main branch
-docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:main-20250906-abc123d
-```
-
-**Available tags:** 
-- **Releases**: `latest`, `v1.0.0`, `v1.1.0`, etc.
-- **Continuous**: `main` (latest main branch build)
-- **Development**: `main-<date>-<sha>` (specific commit builds)
-
-</details>
-
-#### Publishing a server
-
-To publish a server, we've built a simple CLI. You can use it with:
-
-```bash
-# Build the latest CLI
-make publisher
-
-# Use it!
-./bin/mcp-publisher --help
-```
-
-See [the publisher guide](./docs/modelcontextprotocol-io/quickstart.mdx) for more details.
-
-#### Other commands
-
-```bash
-# Run lint, unit tests and integration tests
-make check
-```
-
-There are also a few more helpful commands for development. Run `make help` to learn more, or look in [Makefile](./Makefile).
-
-<!--
-For Claude and other AI tools: Always prefer make targets over custom commands where possible.
--->
-
-## Architecture
-
-### Project Structure
+Place these in a directory (e.g. `C:/software/lca-assistant/` or `~/lca-assistant/`):
 
 ```
-├── cmd/                     # Application entry points
-│   └── publisher/           # Server publishing tool
-├── data/                    # Seed data
-├── deploy/                  # Deployment configuration (Pulumi)
-├── docs/                    # Documentation
-├── internal/                # Private application code
-│   ├── api/                 # HTTP handlers and routing
-│   ├── auth/                # Authentication (GitHub OAuth, JWT, namespace blocking)
-│   ├── config/              # Configuration management
-│   ├── database/            # Data persistence (PostgreSQL)
-│   ├── service/             # Business logic
-│   ├── telemetry/           # Metrics and monitoring
-│   └── validators/          # Input validation
-├── pkg/                     # Public packages
-│   ├── api/                 # API types and structures
-│   │   └── v0/              # Version 0 API types
-│   └── model/               # Data models for server.json
-├── scripts/                 # Development and testing scripts
-├── tests/                   # Integration tests
-└── tools/                   # CLI tools and utilities
-    └── validate-*.sh        # Schema validation tools
+lca-assistant/
+  lca_functions.py
+  mcp_lca_server.py
 ```
 
-### Authentication
+### 2. Connect your MCP client
 
-Publishing supports multiple authentication methods:
-- **GitHub OAuth** - For publishing by logging into GitHub
-- **GitHub OIDC** - For publishing from GitHub Actions
-- **DNS verification** - For proving ownership of a domain and its subdomains
-- **HTTP verification** - For proving ownership of a domain
+The server uses stdio transport. Any MCP client that can spawn a local Python process will work. The command is always `python path/to/mcp_lca_server.py`.
 
-The registry validates namespace ownership when publishing. E.g. to publish...:
-- `io.github.domdomegg/my-cool-mcp` you must login to GitHub as `domdomegg`, or be in a GitHub Action on domdomegg's repos
-- `me.adamjones/my-cool-mcp` you must prove ownership of `adamjones.me` via DNS or HTTP challenge
+#### Claude Desktop
 
-## Community Projects
+Go to Settings > Developer > Edit Config. Add an `openLCA` entry to the `mcpServers` section:
 
-Check out [community projects](docs/community-projects.md) to explore notable registry-related work created by the community.
+**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 
-## More documentation
+```json
+{
+  "mcpServers": {
+    "openLCA": {
+      "command": "python",
+      "args": ["C:/software/lca-assistant/mcp_lca_server.py"],
+      "env": {
+        "OLCA_PORT": "8080"
+      }
+    }
+  }
+}
+```
 
-See the [documentation](./docs) for more details if your question has not been answered here!
+On Windows, if the client can't find Python, use the full path (e.g. `C:\\Users\\yourname\\AppData\\Local\\Python\\bin\\python.exe`).
+
+Restart Claude Desktop after saving.
+
+#### Cursor
+
+Go to Settings > Tools & MCP > Add MCP Server. Choose stdio transport, set the command to `python` and the argument to the path to `mcp_lca_server.py`. Cursor picks up config changes without restarting.
+
+#### VS Code
+
+Add the server to `.vscode/mcp.json` in your workspace:
+
+```json
+{
+  "servers": {
+    "openLCA": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["C:/path/to/B280-olca-MCP/mcp_lca_server.py"],
+      "env": {
+        "OLCA_PORT": "8080"
+      }
+    }
+  }
+}
+```
+
+Note: VS Code uses `servers` as the root key, not `mcpServers`. If using GitHub Copilot, switch Copilot Chat to **Agent mode** for MCP tools to work.
+
+#### ChatGPT
+
+This server uses local stdio transport. ChatGPT currently requires remote MCP servers (Streamable HTTP/SSE). A local stdio server does not connect directly to ChatGPT under OpenAI's current architecture. If OpenAI adds local stdio support, the server should work without modification.
+
+#### Other MCP clients
+
+Any client that spawns a local Python process over stdin/stdout should work. The server command is always: `python path/to/mcp_lca_server.py`.
+
+### 3. Start the IPC server in openLCA
+
+1. Open your database in openLCA
+2. Go to **Tools > Developer Tools > IPC Server**
+3. Leave the port as **8080**
+4. Click the green play button
+5. Status shows **Running** when ready
+
+### 4. Restart your MCP client
+
+Most clients read config on startup. After saving, restart the application (or reconnect, depending on the client). The openLCA tools will appear in the tool list.
+
+## After creating or modifying anything
+
+openLCA does not auto-refresh when changes are made via IPC. After using the model-building tools (create_flow, create_bridge, create_process), press the **Refresh** button in openLCA's toolbar (the circular arrow icon) to see the changes in the navigation panel.
+
+## Tools
+
+### Explore (11 tools)
+
+| Tool | Purpose |
+|------|---------|
+| `database_info` | Counts of systems, processes, flows, methods, parameters. Auto-detects database family |
+| `set_database_family` | Set ecoinvent or FLCAC naming conventions (from user input) |
+| `list_systems` | List/search product systems |
+| `list_methods` | List/search impact assessment methods |
+| `search_processes` | Find processes by name, category, and/or location |
+| `search_flows` | Find flows by name and/or category folder |
+| `chemical_synonyms` | Look up chemical synonyms via PubChem and search the database for matches |
+| `process_details` | Full process info: exchanges, parameters, providers |
+| `system_parameters` | List parameters for a product system |
+| `global_parameters` | Look up database-level parameters |
+| `find_unit` | Look up units and their flow properties |
+
+### Build (7 tools)
+
+| Tool | Purpose |
+|------|---------|
+| `create_flow` | Create product, waste, or elementary flows |
+| `create_bridge` | Create a bridge flow + process in one call (connects foreground to background) |
+| `create_process` | Build a process with exchanges, parameters, and providers |
+| `create_system` | Create a product system from a process, with optional target amount/unit |
+| `get_system_links` | Show which providers were linked for each exchange (filterable by name) |
+| `edit_process` | Edit an existing process: add/update/remove exchanges, add/update parameters |
+| `delete_entity` | Delete a process, flow, or product system (requires explicit user confirmation) |
+
+### Audit (4 tools)
+
+| Tool | Purpose |
+|------|---------|
+| `extract_model` | Pull everything from a model folder: processes, flows, exchanges, parameters |
+| `audit_model` | Structural checks: missing qrefs, zero amounts, unit mismatches |
+| `validate_system` | Mirrors openLCA's Validate button: linking, parameters, test calculation |
+| `data_quality` | Extract pedigree matrices and uncertainty from a process |
+
+### Calculate (8 tools)
+
+| Tool | Purpose |
+|------|---------|
+| `calculate` | Baseline impact assessment |
+| `contribution_analysis` | Process-level contribution breakdown per impact category |
+| `monte_carlo` | Uncertainty simulation with statistics (mean, SD, CV, percentiles) |
+| `inventory_flows` | Raw elementary flow results (LCI level) |
+| `scenarios` | Scenario calculations from conversational parameter values |
+| `scenarios_csv` | Scenario calculations from a CSV file |
+| `sensitivity` | Parameter sensitivity analysis (conversational) |
+| `sensitivity_csv` | Sensitivity analysis from a CSV file |
+
+## Model building conventions
+
+Models built through this MCP follow the Below280 bridge architecture:
+
+- All processes and flows go in a folder starting with `00: ` (e.g. `00: My Project`)
+- Background database connections go through **bridge processes**: single-exchange processes that connect the foreground to ecoinvent or other background databases
+- Bridges go in a subfolder (e.g. `00: My Project/Bridges`)
+- Module processes go in subfolders by stage (e.g. `00: My Project/Modules/A1`)
+- Parameters are independent with default values, suitable for scenario CSV injection
+
+This architecture allows database swapping by updating bridges only, and keeps the foreground model independent of the background database choice.
+
+## Visualisation
+
+The repository includes a React dashboard artifact (`B280_LCA_Dashboard.jsx`) for presenting results visually. It provides:
+
+- Scenario comparison bar charts with radar profiles
+- Sensitivity tornado diagrams
+- Contribution breakdown charts
+- Results tables with CSV export
+- Four colour themes: Greyscale (default), Dark, B280, openLCA
+- English and Portuguese language support
+
+The assistant uses this template when presenting calculation results in clients that support artifacts.
+
+## Scaling behaviour
+
+openLCA scales processes automatically to meet demand. A process outputting 1 kg of steel feeding one that needs 5 kg is correct: openLCA runs the first process five times. The audit and validation tools understand this and will not flag amount differences between connected processes as errors.
+
+openLCA also handles same-property unit conversions automatically (MJ to kWh, kg to t). These are not flagged either.
+
+## Reference documentation
+
+- [Connecting AI to openLCA](https://below280.com/knowledge-base/openlca-scripting/) (full setup guide and examples)
+- [Below280 Knowledge Base](https://below280.com/knowledge-base/) (especially [openLCA Scripting](https://below280.com/knowledge-base/openlca-scripting/))
+- [openLCA Manual](https://greendelta.github.io/openLCA2-manual/introduction/index.html)
+- [openLCA IPC Documentation](https://greendelta.github.io/openLCA-ApiDoc/)
+
+## About
+
+Built by [Below280 Limited](https://below280.com), a UK LCA consultancy and UK partner for [openLCA](https://www.openlca.org). The calculation patterns in this server are derived from production scripts used in EPD and LCA consulting work, tested against ecoinvent 3.10/3.11, EN15804GD, and US Federal LCA Commons (FLCAC) databases.
+
+The server uses GreenDelta's official `olca-ipc` and `olca-schema` Python packages for all openLCA communication.
+
+Developed and tested with Claude Desktop. The server uses the MCP standard and should therefore be usable by other MCP-compatible clients, although these have not been tested by Below280.
+
+## Licence
+
+MPL-2.0
+
+
+
 
 mcp-name: io.github.Below280/b280-olca-mcp
