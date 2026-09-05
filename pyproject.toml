@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "b280-olca-mcp"
-version = "1.12.0"
+version = "1.13.0"
 description = "MCP server connecting AI assistants to openLCA via its IPC server"
 readme = "README.md"
 license = {file = "LICENSE"}
