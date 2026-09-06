@@ -117,7 +117,19 @@ Note: VS Code uses `servers` as the root key, not `mcpServers`. If using GitHub 
 
 ### ChatGPT
 
-ChatGPT does not directly launch a local stdio server. A public Streamable HTTP endpoint remains the standard deployment route. For developer testing, OpenAI documents Secure MCP Tunnel, which can connect ChatGPT to a private stdio server without exposing it publicly.
+ChatGPT cannot directly launch a local stdio server. OpenAI provides the [Secure MCP Tunnel](https://github.com/openai/tunnel-client), which bridges ChatGPT to a local MCP server without exposing anything publicly. The architecture is:
+
+```text
+ChatGPT → Secure MCP Tunnel → B280 MCP (stdio) → openLCA IPC localhost:8080
+```
+
+The tunnel launches the B280 server (`python -m b280_olca_mcp`) on your machine. No changes to the B280 server are needed; it remains stdio throughout. No additional `search` or `fetch` tools are required for ChatGPT custom MCP servers.
+
+B280's existing [tool annotations](#tool-annotations) (read-only, destructive, idempotent) are used by ChatGPT when deciding whether to auto-approve or prompt for confirmation.
+
+For the full setup guide, including installation, configuration, troubleshooting and security considerations, see **[docs/chatgpt.md](docs/chatgpt.md)**.
+
+ChatGPT support is currently experimental. A remote Streamable HTTP transport option may be added in future for users who prefer not to run the local tunnel.
 
 ### Other MCP clients
 
