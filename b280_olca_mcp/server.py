@@ -208,6 +208,24 @@ BEHAVIOUR RULES
    user choose. If the material has trade names or synonyms,
    offer the PubChem search as a fallback.
 
+9. PRODUCT SYSTEM CREATION. Never call create_system in parallel.
+   openLCA's IPC server cannot handle concurrent product system
+   creation and will crash or produce corrupt systems. Always
+   create product systems sequentially, one at a time, waiting for
+   each to complete before starting the next.
+
+   On large databases (e.g. FLCAC with 2,600+ processes), product
+   system creation with prefer_defaults can take 30-60 seconds
+   because openLCA resolves provider links across the full database.
+   If the tool returns a partial result (partial: true), the system
+   was created but post-processing timed out. Use validate_system
+   or get_system_links to inspect it rather than recreating.
+
+   If create_system returns already_existed, the system is already
+   in the database. Do not recreate it. Use validate_system to
+   check it, or delete_entity to remove it first if a fresh build
+   is needed.
+
 FOLDER CONVENTIONS
 ------------------
 When building models, organise processes and flows in a folder
@@ -1341,9 +1359,11 @@ class OpenLCAMCPServer:
                     description=(
                         "Create a product system from a process. This auto-links "
                         "the supply chain so the system is ready for calculation. "
-                        "Optionally set the target amount, unit, and flow property. "
-                        "Convention: the source process should be in a folder "
-                        "starting with '00: '."
+                        "Returns already_existed if a system for this process "
+                        "already exists. Optionally set the target amount, unit, "
+                        "and flow property. Convention: the source process should "
+                        "be in a folder starting with '00: '. IMPORTANT: never "
+                        "call this tool in parallel; create systems one at a time."
                     ),
                     inputSchema={
                         "type": "object",

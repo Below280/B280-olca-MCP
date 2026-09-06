@@ -18,6 +18,7 @@ import uuid
 import urllib.request
 import urllib.parse
 import json as json_module
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class LCAFunctions:
         self._cache: Dict[str, Any] = {}
         self._cache_ts: Dict[str, float] = {}
         self._cache_ttl: float = 1800  # 30 minutes
+        self._system_lock = threading.Lock()  # serialise product system creation
 
     # ── helpers ──────────────────────────────────────────────
 
@@ -1956,6 +1958,23 @@ class LCAFunctions:
         if not process:
             return {"error": f"Process not found: {process_ref}"}
 
+        # BUG-06: Pre-flight duplicate check
+        existing = self._get_descriptors(o.ProductSystem)
+        for ps in existing:
+            ps_cat = getattr(ps, "category", "") or ""
+            if ps.name == process.name:
+                return {
+                    "system_id": ps.id,
+                    "system_name": ps.name,
+                    "category": ps_cat,
+                    "already_existed": True,
+                    "hint": (
+                        "Product system already exists for this process. "
+                        "Use list_systems or validate_system to inspect it, "
+                        "or delete_entity to remove it before recreating."
+                    ),
+                }
+
         # Set up linking config
         if linking == "only_defaults":
             provider = o.ProviderLinking.ONLY_DEFAULTS
@@ -1967,18 +1986,45 @@ class LCAFunctions:
             provider_linking=provider,
         )
 
-        try:
-            system_ref = self.client.create_product_system(process, config)
+        system_id = None
+        warnings = []
 
-            # Modify target amount/unit/flow property if requested
-            if any([target_amount, target_unit, target_flow_property, category]):
+        # BUG-02: Serialise product system creation to prevent
+        # concurrent IPC crashes in openLCA
+        with self._system_lock:
+            try:
+                system_ref = self.client.create_product_system(process, config)
+                system_id = system_ref.id
+
+                # Always read back the system for post-creation fixes
                 system = self.client.get(o.ProductSystem, system_ref.id)
+
+                # BUG-01: Default target_amount to qref amount when IPC
+                # returns 0 (the IPC default). Read the source process to
+                # find its quantitative reference amount.
+                current_amount = getattr(system, "target_amount", 0) or 0
+                if target_amount is not None:
+                    system.target_amount = target_amount
+                elif current_amount == 0:
+                    qref_amount = 1.0  # safe fallback
+                    try:
+                        source_proc = self.client.get(o.Process, process.id)
+                        if source_proc and source_proc.exchanges:
+                            for ex in source_proc.exchanges:
+                                if getattr(ex, "is_quantitative_reference", False):
+                                    qref_amount = ex.amount or 1.0
+                                    break
+                    except Exception:
+                        pass
+                    system.target_amount = qref_amount
+                    warnings.append(
+                        f"target_amount was 0 after creation; "
+                        f"defaulted to quantitative reference amount "
+                        f"({qref_amount})"
+                    )
 
                 if category:
                     system.category = category
-
-                if target_amount is not None:
-                    system.target_amount = target_amount
 
                 if target_flow_property:
                     self._ensure_unit_cache()
@@ -1996,31 +2042,54 @@ class LCAFunctions:
 
                 self.client.put(system)
 
-            # Clear the product system cache so it shows up immediately
-            if "ProductSystem" in self._cache:
-                del self._cache["ProductSystem"]
+                # Clear the product system cache so it shows up immediately
+                if "ProductSystem" in self._cache:
+                    del self._cache["ProductSystem"]
 
-            # Read back the system to report which providers were linked
-            linked_system = self.client.get(o.ProductSystem, system_ref.id)
-            links = self._extract_links(linked_system)
+                # Read back the system to report which providers were linked
+                linked_system = self.client.get(o.ProductSystem, system_ref.id)
+                links = self._extract_links(linked_system)
 
-            result = {
-                "system_id": system_ref.id,
-                "system_name": system_ref.name,
-                "source_process": process.name,
-                "linking": linking,
-                "linked_providers": links,
-            }
-            if target_amount is not None:
-                result["target_amount"] = target_amount
-            if target_unit:
-                result["target_unit"] = target_unit
-            if target_flow_property:
-                result["target_flow_property"] = target_flow_property
-            return result
+                # BUG-03: Warn when only_defaults links zero providers
+                if not links and linking == "only_defaults":
+                    warnings.append(
+                        "No providers were linked. 'only_defaults' links "
+                        "only processes with a default provider set. Try "
+                        "'prefer_defaults' to auto-link all exchanges."
+                    )
 
-        except Exception as e:
-            return {"error": str(e)}
+                result = {
+                    "system_id": system_ref.id,
+                    "system_name": system_ref.name,
+                    "source_process": process.name,
+                    "linking": linking,
+                    "linked_providers": links,
+                    "target_amount": system.target_amount,
+                }
+                if target_unit:
+                    result["target_unit"] = target_unit
+                if target_flow_property:
+                    result["target_flow_property"] = target_flow_property
+                if warnings:
+                    result["warnings"] = warnings
+                return result
+
+            except Exception as e:
+                # BUG-04/05: If the system was created but post-processing
+                # failed, still return the system_id so it isn't orphaned
+                if system_id:
+                    return {
+                        "error": str(e),
+                        "system_id": system_id,
+                        "partial": True,
+                        "hint": (
+                            "Product system was created but post-processing "
+                            "failed (possibly a timeout on a large database). "
+                            "The system exists in openLCA and can be inspected "
+                            "with validate_system or get_system_links."
+                        ),
+                    }
+                return {"error": str(e)}
 
     def _extract_links(self, system) -> List[Dict]:
         """Extract process links from a product system."""
