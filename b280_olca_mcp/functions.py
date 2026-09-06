@@ -578,6 +578,47 @@ class LCAFunctions:
         self._ensure_unit_cache()
         return self._unit_lookup.get(unit_name)
 
+    @staticmethod
+    def _clean_param_segment(text: str, length: int = 10) -> str:
+        """Normalise one segment of an auto-parameter name.
+
+        Spaces and commas become underscores, repeated underscores
+        collapse, and the result is truncated to `length` characters.
+        """
+        text = (text or "").strip()
+        text = text.replace(",", "_").replace(" ", "_")
+        while "__" in text:
+            text = text.replace("__", "_")
+        return text.strip("_")[:length]
+
+    def _make_param_name(self, index: int, process_name: str,
+                         flow_name: str, unit_name: str,
+                         used_names: Optional[set] = None) -> str:
+        """Build an auto-parameter name in Below280's convention:
+
+            NN_processname__flowname_unit
+
+        NN is a zero-padded two-digit index (guarantees uniqueness
+        within the process), each name segment is truncated to
+        10 characters with spaces/commas normalised to underscores,
+        and the process/flow segments are joined with a DOUBLE
+        underscore so the process-name/flow-name boundary stays
+        visually distinct from the other single-underscore joins.
+        """
+        base = (
+            f"{index:02d}_{self._clean_param_segment(process_name)}"
+            f"__{self._clean_param_segment(flow_name)}"
+            f"_{self._clean_param_segment(unit_name)}"
+        )
+        name = base
+        if used_names is not None:
+            suffix = 1
+            while name in used_names:
+                name = f"{base}_{suffix}"
+                suffix += 1
+            used_names.add(name)
+        return name
+
     def _get_fp_ref(self, unit_name: str):
         """Internal: get flow property Ref for a unit.
 
@@ -845,6 +886,7 @@ class LCAFunctions:
                     }
 
             # Validate all flow_ids and provider_ids exist in this database
+            flow_lookup: Dict[str, Any] = {}
             for i, ex_def in enumerate(exchanges):
                 fid = ex_def.get("flow_id")
                 if fid:
@@ -854,6 +896,7 @@ class LCAFunctions:
                             "error": f"Exchange {i}: flow_id '{fid}' not found in connected database. "
                                      f"Check that the ID is from this database, not a previous session.",
                         }
+                    flow_lookup[fid] = flow_check
                 pid = ex_def.get("provider_id")
                 if pid:
                     prov_check = self.client.get(o.Process, pid)
@@ -890,30 +933,54 @@ class LCAFunctions:
                         ref_type=o.RefType.Location,
                     )
 
-            # Build exchanges
+            # Build exchanges. Every exchange is fully parametrised:
+            # a bare amount becomes a process-scoped parameter named
+            # NN_processname__flowname_unit (Below280 convention), and
+            # the exchange references it via amount_formula. An
+            # exchange that already carries an explicit formula is
+            # left as-is, since it's already parametrised by design
+            # (it may reference shared or global parameters).
+            used_param_names = {pd["name"] for pd in (parameters or [])}
+            auto_param_objects = []
             exchange_objects = []
             for i, ex_def in enumerate(exchanges, start=1):
                 x = o.Exchange()
                 x.internal_id = i
+                fid = ex_def["flow_id"]
+                flow_name = ex_def.get("flow_name") or getattr(
+                    flow_lookup.get(fid), "name", "") or ""
                 x.flow = o.Ref(
-                    id=ex_def["flow_id"],
-                    name=ex_def.get("flow_name", ""),
+                    id=fid,
+                    name=flow_name,
                     ref_type=o.RefType.Flow,
                 )
-
-                # Amount: formula takes precedence
-                formula = ex_def.get("formula")
-                if formula:
-                    x.amount = 0.0
-                    x.amount_formula = formula
-                else:
-                    x.amount = float(ex_def.get("amount", 0.0))
 
                 # Unit
                 unit_name = ex_def.get("unit", "kg")
                 unit_ref = self._get_unit_ref(unit_name)
                 if unit_ref:
                     x.unit = unit_ref
+
+                # Amount: an explicit formula is respected as-is;
+                # a bare amount is auto-parametrised.
+                formula = ex_def.get("formula")
+                if formula:
+                    x.amount = 0.0
+                    x.amount_formula = formula
+                else:
+                    amount = float(ex_def.get("amount", 0.0))
+                    param_name = self._make_param_name(
+                        i - 1, name, flow_name, unit_name, used_param_names)
+                    auto_param = o.Parameter()
+                    auto_param.id = str(uuid.uuid4())
+                    auto_param.name = param_name
+                    auto_param.value = amount
+                    auto_param.parameter_scope = o.ParameterScope.PROCESS_SCOPE
+                    auto_param.is_input_parameter = True
+                    auto_param_objects.append(auto_param)
+
+                    x.amount = 0.0
+                    x.amount_formula = param_name
 
                 x.is_input = ex_def.get("is_input", True)
                 x.is_quantitative_reference = ex_def.get("is_qref", False)
@@ -942,9 +1009,10 @@ class LCAFunctions:
             if qref:
                 p.quantitative_reference = qref
 
-            # Build parameters
+            # Build parameters: explicitly-provided ones plus the
+            # auto-generated ones from bare-amount exchanges above.
+            param_objects = list(auto_param_objects)
             if parameters:
-                param_objects = []
                 for pd in parameters:
                     param = o.Parameter()
                     param.id = str(uuid.uuid4())
@@ -954,6 +1022,7 @@ class LCAFunctions:
                     param.is_input_parameter = True
                     param.description = pd.get("description", "")
                     param_objects.append(param)
+            if param_objects:
                 p.parameters = param_objects
 
             ref = self.client.put(p)
@@ -965,7 +1034,8 @@ class LCAFunctions:
                 "process_name": ref.name,
                 "category": category,
                 "exchange_count": len(exchange_objects),
-                "parameter_count": len(parameters) if parameters else 0,
+                "parameter_count": len(param_objects),
+                "auto_parametrised": len(auto_param_objects),
             }
 
         except Exception as ex:
@@ -1092,10 +1162,14 @@ class LCAFunctions:
                     process.parameters.append(param)
                     changes.append(f"parameter '{pd['name']}' added")
 
-            # Add new exchanges
+            # Add new exchanges. Bare amounts are auto-parametrised in
+            # the same NN_processname__flowname_unit convention used by
+            # create_process; an explicit formula is left as-is.
             if add_exchanges:
                 if not process.exchanges:
                     process.exchanges = []
+                if not process.parameters:
+                    process.parameters = []
 
                 # Find the next internal_id
                 max_id = process.last_internal_id or 0
@@ -1107,27 +1181,50 @@ class LCAFunctions:
                     if existing_ids:
                         max_id = max(max_id, max(existing_ids))
 
+                used_param_names = {p.name for p in process.parameters}
+                next_param_index = len(process.parameters)
+
                 for ex_def in add_exchanges:
                     max_id += 1
                     x = o.Exchange()
                     x.internal_id = max_id
+                    fid = ex_def["flow_id"]
+                    flow_name = ex_def.get("flow_name", "")
+                    if not flow_name:
+                        flow_check = self.client.get(o.Flow, fid)
+                        flow_name = getattr(flow_check, "name", "") or ""
                     x.flow = o.Ref(
-                        id=ex_def["flow_id"],
-                        name=ex_def.get("flow_name", ""),
+                        id=fid,
+                        name=flow_name,
                         ref_type=o.RefType.Flow,
                     )
+
+                    unit_name = ex_def.get("unit", "kg")
+                    unit_ref = self._get_unit_ref(unit_name)
+                    if unit_ref:
+                        x.unit = unit_ref
 
                     formula = ex_def.get("formula")
                     if formula:
                         x.amount = 0.0
                         x.amount_formula = formula
                     else:
-                        x.amount = float(ex_def.get("amount", 0.0))
+                        amount = float(ex_def.get("amount", 0.0))
+                        param_name = self._make_param_name(
+                            next_param_index, process.name, flow_name,
+                            unit_name, used_param_names)
+                        next_param_index += 1
+                        auto_param = o.Parameter()
+                        auto_param.id = str(uuid.uuid4())
+                        auto_param.name = param_name
+                        auto_param.value = amount
+                        auto_param.parameter_scope = o.ParameterScope.PROCESS_SCOPE
+                        auto_param.is_input_parameter = True
+                        process.parameters.append(auto_param)
+                        changes.append(f"parameter '{param_name}' added")
 
-                    unit_name = ex_def.get("unit", "kg")
-                    unit_ref = self._get_unit_ref(unit_name)
-                    if unit_ref:
-                        x.unit = unit_ref
+                        x.amount = 0.0
+                        x.amount_formula = param_name
 
                     x.is_input = ex_def.get("is_input", True)
                     x.is_quantitative_reference = ex_def.get("is_qref", False)
@@ -1140,7 +1237,6 @@ class LCAFunctions:
                         )
 
                     process.exchanges.append(x)
-                    flow_name = ex_def.get("flow_name", ex_def.get("flow_id", "?"))
                     changes.append(f"exchange '{flow_name}' added")
 
                 process.last_internal_id = max_id

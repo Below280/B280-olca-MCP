@@ -1,6 +1,6 @@
 # Tool Reference
 
-Complete reference for all 30 tools in the openLCA MCP Server. Each entry shows the tool name, what it does, required and optional inputs, and an example prompt that would trigger it.
+Complete reference for all 31 tools in the openLCA MCP Server. Each entry shows the tool name, what it does, required and optional inputs, and an example prompt that would trigger it.
 
 ## Explore
 
@@ -226,6 +226,8 @@ Create a product system from a process. Auto-links the supply chain. Optionally 
 
 ---
 
+## Audit
+
 ### `get_system_links`
 
 Show which providers are linked to which exchanges in a product system. Use search_term to filter by flow or provider name. Essential for checking what `create_system` chose for ambiguous flows like electricity.
@@ -238,8 +240,6 @@ Show which providers are linked to which exchanges in a product system. Use sear
 **Example:** 'Which electricity provider got linked in my system?' → `{"system": "My System", "search_term": "electricity"}`
 
 ---
-
-## Audit
 
 ### `extract_model`
 
@@ -419,3 +419,15 @@ Run sensitivity analysis from a CSV file listing parameter names (one per line).
 - `output_path` (optional): path for results CSV
 
 **Example:** 'Run sensitivity on the parameters listed in my_params.csv'
+
+
+## Meta
+
+### `help`
+
+Show what this MCP server can do, grouped by workflow. Call this when the user asks 'what can you do', 'help', 'what tools do you have', or seems unsure where to start.
+
+**Inputs:**
+- `topic` (optional): one of `explore`, `build`, `audit`, `calculate`, `scripting`, `epd`, `connect` — filters the response to that area
+
+**Example:** 'What can you do?'

@@ -393,8 +393,10 @@ Step 4: Module processes.
     - Has a quantitative reference output (the declared unit or
       an intermediate product flowing to the next module)
     - Takes bridge processes as inputs for background connections
-    - Uses parameters for quantities where the LCI provides them
-    - Has amounts set from the LCI data
+    - Has amounts set from the LCI data. create_process auto-
+      parametrises every bare amount, so this happens by default;
+      only pass an explicit formula when an exchange should share
+      an existing or global parameter instead of getting its own.
 
   If the LCI provides quantities per declared unit (e.g. per 1 m3
   of timber), use those directly. If quantities are annual totals,
@@ -965,7 +967,14 @@ class OpenLCAMCPServer:
                         "and outputs. Exactly one must have is_qref=true. "
                         "Flow IDs are validated against the connected database. "
                         "Convention: place in a '00: ' model folder. "
-                        "NOTE: openLCA scales processes automatically."
+                        "NOTE: openLCA scales processes automatically. "
+                        "Every exchange is fully parametrised: a bare 'amount' "
+                        "is automatically turned into a process-scoped "
+                        "parameter named NN_processname__flowname_unit and the "
+                        "exchange references it, matching Below280's own "
+                        "modelling convention. Pass 'formula' instead only "
+                        "when the exchange should reference an existing, "
+                        "shared, or global parameter."
                     ),
                     inputSchema={
                         "type": "object",
@@ -990,12 +999,22 @@ class OpenLCAMCPServer:
                                         },
                                         "amount": {
                                             "type": "number",
-                                            "description": "Numeric amount (ignored if formula is set)",
+                                            "description": (
+                                                "Numeric amount (ignored if formula is set). "
+                                                "Automatically becomes a named process "
+                                                "parameter (NN_processname__flowname_unit) "
+                                                "unless formula is set."
+                                            ),
                                             "default": 0,
                                         },
                                         "formula": {
                                             "type": "string",
-                                            "description": "Parameter formula (optional, overrides amount)",
+                                            "description": (
+                                                "Formula referencing an existing, shared, or "
+                                                "global parameter (optional, overrides amount). "
+                                                "Leave unset for a bare amount, which is "
+                                                "auto-parametrised instead."
+                                            ),
                                         },
                                         "unit": {
                                             "type": "string",

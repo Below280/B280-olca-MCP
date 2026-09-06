@@ -13,6 +13,11 @@ build an openLCA client in any language that can make HTTP POST requests and
 parse JSON. The protocol is language-agnostic: the same requests work from
 Python, R, Fortran, JavaScript, Go, Rust, Julia, or curl.
 
+Below280's own tested reference implementations only cover Python, R, and
+Fortran. A generated client in any other language follows this protocol
+correctly but has not been run against a live openLCA instance by Below280 -
+describe it as untested until the user confirms it works.
+
 TRANSPORT
 ---------
 HTTP POST to http://localhost:8080 (default port).
