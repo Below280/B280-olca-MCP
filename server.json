@@ -7,12 +7,12 @@
     "url": "https://github.com/Below280/B280-olca-MCP",
     "source": "github"
   },
-  "version": "1.13.6",
+  "version": "1.13.7",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "b280-olca-mcp",
-      "version": "1.13.6",
+      "version": "1.13.7",
       "transport": {
         "type": "stdio"
       }
