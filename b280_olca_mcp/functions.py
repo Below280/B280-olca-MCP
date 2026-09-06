@@ -233,6 +233,13 @@ class LCAFunctions:
                          location_filter: str = "",
                          limit: int = 20) -> Dict:
         """Search processes by name, category, and/or location."""
+        # W01: Clamp limit to sensible range
+        MAX_SEARCH_LIMIT = 200
+        if limit <= 0:
+            limit = 20  # treat 0 or negative as default
+        elif limit > MAX_SEARCH_LIMIT:
+            limit = MAX_SEARCH_LIMIT
+
         processes = self._get_descriptors(o.Process)
         term = search_term.lower()
         cat = category_filter.lower() if category_filter else ""
@@ -269,6 +276,13 @@ class LCAFunctions:
                      category_filter: str = "",
                      limit: int = 20) -> Dict:
         """Search flows by name and/or category folder."""
+        # W01: Clamp limit to sensible range
+        MAX_SEARCH_LIMIT = 200
+        if limit <= 0:
+            limit = 20
+        elif limit > MAX_SEARCH_LIMIT:
+            limit = MAX_SEARCH_LIMIT
+
         flows = self._get_descriptors(o.Flow)
         matches = []
         term = search_term.lower() if search_term else ""
@@ -556,6 +570,16 @@ class LCAFunctions:
         auto-detects.
         """
         family = family.lower().strip()
+
+        # W02: Detect current family *before* overwriting, so we can
+        # warn if the user is switching away from the auto-detected one.
+        # Temporarily clear the cache to force fresh detection.
+        prev_family = getattr(self, "_db_family", None)
+        self._db_family = None
+        detected = self._detect_database_family()
+        # Restore the previous value so the overwrite below is clean
+        self._db_family = prev_family
+
         if family in ("ecoinvent", "ei"):
             self._db_family = "ecoinvent"
         elif family in ("flcac", "lca commons", "uslci", "useeio"):
@@ -567,11 +591,25 @@ class LCAFunctions:
                 "flcac_includes": "LCA Commons, US LCI, USEEIO",
             }
 
+        # W02: Warn if overriding a different auto-detected family
+        warning = None
+        if detected != "unknown" and detected != self._db_family:
+            warning = (
+                f"Auto-detected family was '{detected}' but you've "
+                f"overridden it to '{self._db_family}'. This changes "
+                f"unit-to-flow-property mapping for all subsequent "
+                f"operations. Call set_database_family('{detected}') "
+                f"to revert."
+            )
+
         logger.info(f"Database family set by user: {self._db_family}")
-        return {
+        result = {
             "database_family": self._db_family,
             "unit_mapping": "ecoinvent" if self._db_family == "ecoinvent" else "FLCAC",
         }
+        if warning:
+            result["warning"] = warning
+        return result
 
     @property
     def UNIT_FP_MAP(self):
@@ -724,6 +762,17 @@ class LCAFunctions:
         Create a flow, or return the existing one if a flow with
         the same name and category already exists.
         """
+        # B01: Reject empty or whitespace-only names
+        if not name or not name.strip():
+            return {"error": "Flow name cannot be empty or whitespace-only."}
+
+        # W04: Length limits
+        if len(name) > 250:
+            return {
+                "error": f"Flow name is {len(name)} characters (max 250). "
+                         f"Use a shorter name.",
+            }
+
         # Pre-flight: check if this flow already exists
         existing = self._get_descriptors(o.Flow)
         for f in existing:
@@ -800,6 +849,17 @@ class LCAFunctions:
         the input exchange automatically. If provider_flow_id is
         also given, it uses that flow instead of auto-detecting.
         """
+        # B01: Reject empty or whitespace-only names
+        if not name or not name.strip():
+            return {"error": "Bridge name cannot be empty or whitespace-only."}
+
+        # W04: Length limits
+        if len(name) > 250:
+            return {
+                "error": f"Bridge name is {len(name)} characters (max 250). "
+                         f"Use a shorter name.",
+            }
+
         # Pre-flight: check if a bridge process with this name exists
         existing = self._get_descriptors(o.Process)
         for p in existing:
@@ -950,6 +1010,44 @@ class LCAFunctions:
         so the assistant can use edit_process to modify it.
         """
         try:
+            # B01: Reject empty or whitespace-only process names
+            if not name or not name.strip():
+                return {"error": "Process name cannot be empty or whitespace-only."}
+
+            # W04: Length limits on name and category
+            if len(name) > 250:
+                return {
+                    "error": f"Process name is {len(name)} characters "
+                             f"(max 250). Use a shorter name.",
+                }
+            if category and category.count("/") > 6:
+                return {
+                    "error": f"Category has {category.count('/') + 1} "
+                             f"levels (max 7). Use a shallower path.",
+                }
+
+            # B02: Require at least one exchange
+            if not exchanges:
+                return {
+                    "error": "At least one exchange is required. "
+                             "Include a quantitative reference (is_qref=True) "
+                             "as the process output.",
+                }
+
+            # B04: Exactly one quantitative reference
+            qref_count = sum(1 for ex in exchanges if ex.get("is_qref"))
+            if qref_count == 0:
+                return {
+                    "error": "No quantitative reference found. Exactly one "
+                             "exchange must have is_qref=True.",
+                }
+            if qref_count > 1:
+                return {
+                    "error": f"Found {qref_count} quantitative references "
+                             f"but exactly one is required. Mark only the "
+                             f"main output exchange with is_qref=True.",
+                }
+
             # Pre-flight: check if this process already exists
             existing = self._get_descriptors(o.Process)
             for p in existing:
@@ -1013,6 +1111,58 @@ class LCAFunctions:
                         id=loc_ref.id, name=loc_ref.name,
                         ref_type=o.RefType.Location,
                     )
+
+            # B05/B06/B11: Pre-validate exchange definitions
+            exchange_warnings = []
+            for i, ex_def in enumerate(exchanges):
+                # B05: Warn if the unit doesn't resolve
+                unit_name_check = ex_def.get("unit", "kg")
+                unit_check = self._get_unit_ref(unit_name_check)
+                if not unit_check:
+                    exchange_warnings.append(
+                        f"Exchange {i}: unit '{unit_name_check}' not found "
+                        f"in database; exchange will have no unit set."
+                    )
+
+                # B06: Warn on extreme amounts
+                formula_check = ex_def.get("formula")
+                if not formula_check:
+                    try:
+                        amt = float(ex_def.get("amount", 0.0))
+                        if abs(amt) > 1e15:
+                            exchange_warnings.append(
+                                f"Exchange {i}: amount {amt:.2e} is "
+                                f"extremely large (>1e15). Verify this "
+                                f"is intentional."
+                            )
+                    except (ValueError, TypeError):
+                        return {
+                            "error": f"Exchange {i}: amount "
+                                     f"'{ex_def.get('amount')}' is not "
+                                     f"a valid number.",
+                        }
+
+                # B11: Basic formula validation
+                if formula_check:
+                    # Reject obviously dangerous patterns
+                    dangerous = re.search(
+                        r'(__import__|exec|eval|open|os\.|sys\.|subprocess)',
+                        formula_check,
+                    )
+                    if dangerous:
+                        return {
+                            "error": f"Exchange {i}: formula contains "
+                                     f"disallowed pattern "
+                                     f"'{dangerous.group()}'. Formulas "
+                                     f"should contain only arithmetic "
+                                     f"expressions and parameter names.",
+                        }
+                    # Warn on very long formulas
+                    if len(formula_check) > 500:
+                        exchange_warnings.append(
+                            f"Exchange {i}: formula is {len(formula_check)} "
+                            f"chars long. openLCA may truncate or reject it."
+                        )
 
             # Build exchanges. Every exchange is fully parametrised:
             # a bare amount becomes a process-scoped parameter named
@@ -1140,6 +1290,8 @@ class LCAFunctions:
                 "auto_parametrised": len(auto_param_objects),
             }
             result.update(dq_info)
+            if exchange_warnings:
+                result["warnings"] = exchange_warnings
             return result
 
         except Exception as ex:
@@ -1200,6 +1352,12 @@ class LCAFunctions:
             # Remove exchanges by flow_id
             if remove_exchanges and process.exchanges:
                 remove_set = set(remove_exchanges)
+                # B09: Track which flow_ids were actually found
+                found_ids = {
+                    ex.flow.id for ex in process.exchanges
+                    if ex.flow and ex.flow.id in remove_set
+                }
+                not_found = remove_set - found_ids
                 before = len(process.exchanges)
                 process.exchanges = [
                     ex for ex in process.exchanges
@@ -1208,6 +1366,17 @@ class LCAFunctions:
                 removed = before - len(process.exchanges)
                 if removed:
                     changes.append(f"{removed} exchange(s) removed")
+                if not_found:
+                    changes.append(
+                        f"WARNING: {len(not_found)} flow_id(s) not "
+                        f"found in process exchanges: "
+                        f"{', '.join(sorted(not_found)[:5])}"
+                    )
+            elif remove_exchanges and not process.exchanges:
+                changes.append(
+                    "WARNING: remove_exchanges specified but process "
+                    "has no exchanges."
+                )
 
             # Update existing exchanges (match by flow_id)
             if update_exchanges and process.exchanges:
@@ -1215,8 +1384,10 @@ class LCAFunctions:
                     target_fid = upd.get("flow_id")
                     if not target_fid:
                         continue
+                    matched = False
                     for ex in process.exchanges:
                         if ex.flow and ex.flow.id == target_fid:
+                            matched = True
                             if "formula" in upd and upd["formula"]:
                                 ex.amount = 0.0
                                 ex.amount_formula = upd["formula"]
@@ -1241,15 +1412,35 @@ class LCAFunctions:
                                 changes.append(
                                     f"exchange '{ex.flow.name}' provider updated")
                             break
+                    # B09: Warn if the flow_id wasn't found
+                    if not matched:
+                        changes.append(
+                            f"WARNING: update_exchanges flow_id "
+                            f"'{target_fid}' not found in process."
+                        )
 
             # Update existing parameter values
             if update_parameters and process.parameters:
+                found_params = set()
                 for param in process.parameters:
                     if param.name in update_parameters:
                         old_val = param.value
                         param.value = float(update_parameters[param.name])
+                        found_params.add(param.name)
                         changes.append(
                             f"parameter '{param.name}': {old_val} -> {param.value}")
+                # B09: Report parameters that weren't found
+                not_found_params = set(update_parameters.keys()) - found_params
+                if not_found_params:
+                    changes.append(
+                        f"WARNING: parameter(s) not found in process: "
+                        f"{', '.join(sorted(not_found_params)[:10])}"
+                    )
+            elif update_parameters and not process.parameters:
+                changes.append(
+                    "WARNING: update_parameters specified but process "
+                    "has no parameters."
+                )
 
             # Add new parameters
             if add_parameters:
@@ -1987,6 +2178,54 @@ class LCAFunctions:
                     ),
                 }
 
+        # B07: Validate target_amount if provided
+        if target_amount is not None:
+            if target_amount <= 0:
+                return {
+                    "error": f"target_amount must be positive, got "
+                             f"{target_amount}. Use a positive value "
+                             f"representing the functional unit quantity.",
+                }
+            if abs(target_amount) > 1e15:
+                return {
+                    "error": f"target_amount {target_amount:.2e} is "
+                             f"unreasonably large (>1e15).",
+                }
+
+        # B07: Validate target_unit if provided
+        if target_unit:
+            unit_check = self._get_unit_ref(target_unit)
+            if not unit_check:
+                return {
+                    "error": f"target_unit '{target_unit}' not found "
+                             f"in this database.",
+                }
+
+        # B03: Verify the source process has a quantitative reference
+        # before attempting system creation; without one, openLCA
+        # returns a NoneType error.
+        try:
+            source_proc = self.client.get(o.Process, process.id)
+            if source_proc:
+                has_qref = False
+                if source_proc.exchanges:
+                    for ex in source_proc.exchanges:
+                        if getattr(ex, "is_quantitative_reference", False):
+                            has_qref = True
+                            break
+                if not has_qref:
+                    return {
+                        "error": (
+                            f"Process '{process.name}' has no quantitative "
+                            f"reference exchange. A product system requires "
+                            f"the source process to have exactly one output "
+                            f"exchange marked as quantitative reference "
+                            f"(is_qref=True). Edit the process first."
+                        ),
+                    }
+        except Exception:
+            pass  # proceed and let openLCA report the error if any
+
         # Set up linking config
         if linking == "only_defaults":
             provider = o.ProviderLinking.ONLY_DEFAULTS
@@ -2057,6 +2296,22 @@ class LCAFunctions:
                 # Read back the system to report which providers were linked
                 linked_system = self.client.get(o.ProductSystem, system_ref.id)
                 links = self._extract_links(linked_system)
+
+                # B08: Warn about self-referencing links
+                root_id = process.id
+                self_links = [
+                    lnk for lnk in links
+                    if lnk.get("provider_id") == root_id
+                    and lnk.get("receiving_process_id") == root_id
+                ]
+                if self_links:
+                    warnings.append(
+                        f"Detected {len(self_links)} self-referencing "
+                        f"link(s) where the root process is both "
+                        f"provider and receiver. This creates a "
+                        f"circular dependency that may cause "
+                        f"calculation errors."
+                    )
 
                 # BUG-03: Warn when only_defaults links zero providers
                 if not links and linking == "only_defaults":
@@ -2610,6 +2865,14 @@ class LCAFunctions:
         # Build context lookup once
         system_params = self.client.get_parameters(o.ProductSystem, system.id)
         context_by_name = {p.name: p.context for p in system_params}
+        known_param_names = set(context_by_name.keys())
+
+        # B10: Collect all unique parameter names across scenarios
+        # and warn about any that don't exist in the system
+        all_scenario_params = set()
+        for param_values in scenarios.values():
+            all_scenario_params.update(param_values.keys())
+        missing_params = sorted(all_scenario_params - known_param_names)
 
         results = {}
         for scenario_name, param_values in scenarios.items():
@@ -2622,6 +2885,7 @@ class LCAFunctions:
                     context=context_by_name.get(name),
                 )
                 for name, value in param_values.items()
+                if name in known_param_names  # B10: skip unknown params
             ]
 
             setup = o.CalculationSetup(
@@ -2638,12 +2902,19 @@ class LCAFunctions:
             finally:
                 result.dispose()
 
-        return {
+        result = {
             "system": system.name,
             "method": method.name,
             "scenario_count": len(results),
             "results": results,
         }
+        if missing_params:
+            result["missing"] = missing_params
+            result["warning"] = (
+                f"{len(missing_params)} parameter(s) not found in "
+                f"system and were ignored: {', '.join(missing_params[:10])}"
+            )
+        return result
 
     # ── CSV-based scenarios (mirrors B280_olca_scenarios.py) ──
 
@@ -2793,6 +3064,21 @@ class LCAFunctions:
         if not method:
             return {"error": f"Impact method not found: {method_ref}"}
 
+        # W03: Sanity-check variation percentage
+        if variation_pct <= 0:
+            return {"error": "variation_pct must be positive."}
+        if variation_pct > 10000:
+            return {
+                "error": f"variation_pct of {variation_pct}% is unreasonably "
+                         f"large (max 10,000%). Use a realistic range.",
+            }
+        sensitivity_warnings = []
+        if variation_pct > 200:
+            sensitivity_warnings.append(
+                f"variation_pct of {variation_pct}% is very large. "
+                f"Results above ~200% may not be physically meaningful."
+            )
+
         # Get system parameters and validate
         system_params = self.client.get_parameters(o.ProductSystem, system.id)
         params_by_name = {p.name: p for p in system_params}
@@ -2864,7 +3150,7 @@ class LCAFunctions:
                 finally:
                     result.dispose()
 
-        return {
+        result = {
             "system": system.name,
             "method": method.name,
             "variation_pct": variation_pct,
@@ -2873,6 +3159,9 @@ class LCAFunctions:
             "tested": testable,
             "missing": missing,
         }
+        if sensitivity_warnings:
+            result["warnings"] = sensitivity_warnings
+        return result
 
     # ── CSV-based sensitivity (mirrors B280_olca_sensitivity.py) ─
 
