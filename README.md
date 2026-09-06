@@ -135,6 +135,8 @@ ChatGPT support is currently experimental. A remote Streamable HTTP transport op
 
 Any client that spawns a local Python process over stdin/stdout should work. With PyPI: `python -m b280_olca_mcp`. With GitHub clone: `python path/to/b280_olca_mcp/server.py`.
 
+> **Beta software.** This server is under active development. Test it on a copy of your database before connecting a production database. Report issues on [GitHub](https://github.com/Below280/B280-olca-MCP/issues) or at mcp-feedback@below280.com.
+
 ## Start it
 
 1. Open your database in openLCA
