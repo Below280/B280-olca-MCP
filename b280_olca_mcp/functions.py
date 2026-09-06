@@ -93,6 +93,53 @@ class LCAFunctions:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
+    # ── data quality systems ──────────────────────────────────
+
+    def list_dq_systems(self) -> Dict:
+        """
+        List all DQ (Data Quality) systems in the database.
+
+        Returns process schemas, flow schemas, and social schemas
+        available for assignment to processes. The user picks which
+        ones to use; the IDs are then passed to create_process via
+        flow_schema or process_schema.
+        """
+        try:
+            descriptors = list(self.client.get_descriptors(o.DQSystem))
+            if not descriptors:
+                return {
+                    "dq_systems": [],
+                    "count": 0,
+                    "note": "No DQ systems in this database. "
+                            "Flow and process schemas cannot be set.",
+                }
+
+            systems = []
+            for desc in descriptors:
+                full = self.client.get(o.DQSystem, desc.id)
+                indicator_count = (
+                    len(full.indicators) if full and full.indicators else 0
+                )
+                indicators = []
+                if full and full.indicators:
+                    for ind in full.indicators:
+                        indicators.append({
+                            "name": ind.name,
+                            "scores": len(ind.scores) if ind.scores else 0,
+                        })
+
+                systems.append({
+                    "id": desc.id,
+                    "name": desc.name,
+                    "indicator_count": indicator_count,
+                    "indicators": indicators,
+                })
+
+            return {"dq_systems": systems, "count": len(systems)}
+
+        except Exception as e:
+            return {"error": str(e)}
+
     # ── listing / search ─────────────────────────────────────
 
     def list_product_systems(self, search_term: str = "") -> Dict:
@@ -619,6 +666,24 @@ class LCAFunctions:
             used_names.add(name)
         return name
 
+    def _resolve_dq_system(self, name_or_id: str):
+        """Internal: resolve a DQ system by name or UUID. Returns Ref or None."""
+        for desc in self.client.get_descriptors(o.DQSystem):
+            if desc.id == name_or_id or desc.name == name_or_id:
+                return o.Ref(
+                    id=desc.id, name=desc.name,
+                    ref_type=o.RefType.DQSystem,
+                )
+        # Substring fallback
+        lower = name_or_id.lower()
+        for desc in self.client.get_descriptors(o.DQSystem):
+            if lower in desc.name.lower():
+                return o.Ref(
+                    id=desc.id, name=desc.name,
+                    ref_type=o.RefType.DQSystem,
+                )
+        return None
+
     def _get_fp_ref(self, unit_name: str):
         """Internal: get flow property Ref for a unit.
 
@@ -860,7 +925,9 @@ class LCAFunctions:
                        exchanges: List[Dict],
                        parameters: Optional[List[Dict]] = None,
                        description: str = "",
-                       location: Optional[str] = None) -> Dict:
+                       location: Optional[str] = None,
+                       flow_schema: Optional[str] = None,
+                       process_schema: Optional[str] = None) -> Dict:
         """
         Create a process, or return the existing one if a process
         with the same name and category already exists.
@@ -1025,11 +1092,32 @@ class LCAFunctions:
             if param_objects:
                 p.parameters = param_objects
 
+            # Set DQ systems (flow schema / process schema) if provided
+            dq_info = {}
+            if flow_schema:
+                dq_ref = self._resolve_dq_system(flow_schema)
+                if dq_ref:
+                    p.exchange_dq_system = dq_ref
+                    dq_info["flow_schema"] = dq_ref.name
+                else:
+                    dq_info["flow_schema_warning"] = (
+                        f"DQ system '{flow_schema}' not found, skipped."
+                    )
+            if process_schema:
+                dq_ref = self._resolve_dq_system(process_schema)
+                if dq_ref:
+                    p.dq_system = dq_ref
+                    dq_info["process_schema"] = dq_ref.name
+                else:
+                    dq_info["process_schema_warning"] = (
+                        f"DQ system '{process_schema}' not found, skipped."
+                    )
+
             ref = self.client.put(p)
 
             # Clear process cache so create_system can find it
             self._cache.pop("Process", None)
-            return {
+            result = {
                 "process_id": ref.id,
                 "process_name": ref.name,
                 "category": category,
@@ -1037,6 +1125,8 @@ class LCAFunctions:
                 "parameter_count": len(param_objects),
                 "auto_parametrised": len(auto_param_objects),
             }
+            result.update(dq_info)
+            return result
 
         except Exception as ex:
             return {"error": str(ex)}

@@ -224,7 +224,8 @@ audit_model on that folder.
 
 Subfolders:
   00: My Project/Bridges     → bridge processes and flows
-  00: My Project/Modules/A1  → lifecycle stage processes
+  00: My Project/A1           → A1 lifecycle stage processes
+  00: My Project/A2           → A2 lifecycle stage processes
   00: My Project/Shared Flows → custom product flows
 
 SETUP & TROUBLESHOOTING
@@ -368,6 +369,20 @@ Step 2: Folder structure.
 
   Ask the user what to call the project folder.
 
+Step 2b: Data quality schemas (optional).
+  Call list_dq_systems to check whether the database has any DQ
+  systems. If it does, ask the user:
+
+    'This database has the following data quality schemas:
+     [list them]. Would you like me to set a flow schema and/or
+     process schema on each process I create? This saves setting
+     them manually later. If you are not sure, I can skip this.'
+
+  If the user picks schemas, pass flow_schema and/or
+  process_schema to every create_process call in this workflow.
+  If the database has no DQ systems, or the user declines, skip
+  this silently.
+
 Step 3: Bridge processes.
   For every background database connection (electricity, transport,
   raw materials, waste treatment), create a bridge process in the
@@ -382,21 +397,52 @@ Step 3: Bridge processes.
     BRIDGE | Waste wood, open burning | kg
 
 Step 4: Module processes.
-  For each module that has data, create one process in the
-  corresponding subfolder. For example:
+  Each module folder can contain multiple processes. Create as
+  many processes as the LCI data warrants for each module. For
+  example, A1 might have separate processes for each raw material
+  group, and A3 might split mixing, curing, and packaging.
 
-    A1: Raw materials        (in 00: Project Name/A1)
-    A2: Transport to site    (in 00: Project Name/A2)
-    A3: Manufacturing        (in 00: Project Name/A3)
+  Example for a concrete product:
 
-  Each module process:
-    - Has a quantitative reference output (the declared unit or
-      an intermediate product flowing to the next module)
+    00: Project Name/A1/
+      A1 | Cement supply         (cement + transport to batch plant)
+      A1 | Aggregate supply      (sand, gravel, their transport)
+      A1 | Admixture supply      (chemical admixtures)
+      A1: Raw material supply    ← final process, takes the above as inputs
+
+    00: Project Name/A2/
+      A2: Transport to site      (single process if transport is simple)
+
+    00: Project Name/A3/
+      A3 | Batching              (electricity, water for mixing)
+      A3 | Curing                (energy for curing)
+      A3 | Packaging             (packaging materials, pallets)
+      A3: Manufacturing          ← final process, takes the above as inputs
+
+  Naming convention:
+    - Sub-processes use a pipe separator: 'A1 | Cement supply'
+    - The final aggregating process uses a colon: 'A1: Raw material supply'
+    This makes it immediately clear which process is the module
+    total that the product system should target.
+
+  Each sub-process:
+    - Has a quantitative reference output (a product flow)
     - Takes bridge processes as inputs for background connections
     - Has amounts set from the LCI data. create_process auto-
       parametrises every bare amount, so this happens by default;
       only pass an explicit formula when an exchange should share
       an existing or global parameter instead of getting its own.
+
+  Each final module process:
+    - Has a quantitative reference output (the declared unit or
+      an intermediate product flowing to the next module)
+    - Takes the sub-processes' output flows as inputs
+    - Aggregates the module so the product system has a single
+      entry point per lifecycle stage
+
+  If a module genuinely has only one activity (e.g. A2 is just
+  one transport leg), a single process is fine — it IS the final
+  process, named with the colon convention: 'A2: Transport to site'.
 
   If the LCI provides quantities per declared unit (e.g. per 1 m3
   of timber), use those directly. If quantities are annual totals,
@@ -404,15 +450,21 @@ Step 4: Module processes.
   per-unit values.
 
 Step 5: Product systems.
-  Create a product system for each module process. Place them in
-  matching folders or a dedicated systems folder:
+  Create a product system for each module's FINAL process (the
+  colon-named aggregating process). Place systems in the matching
+  module folder:
 
-    00: Project Name/A1  (system for A1: Raw materials)
+    00: Project Name/A1  (system for A1: Raw material supply)
     00: Project Name/A2  (system for A2: Transport to site)
+    00: Project Name/A3  (system for A3: Manufacturing)
     etc.
 
   Use prefer_defaults linking. Set the target amount and unit to
   match the declared unit from the EPD scope.
+
+  The product system will automatically pull in the sub-processes
+  through the process links, so the verifier sees the full chain
+  from sub-processes through to the module total.
 
 Step 6: Verify.
   After building, run validate_system on each product system.
@@ -757,6 +809,18 @@ class OpenLCAMCPServer:
                     annotations=READONLY,
                 ),
                 Tool(
+                    name="list_dq_systems",
+                    description=(
+                        "List all Data Quality (DQ) systems available in the "
+                        "database. These can be assigned as flow schema "
+                        "(exchange_dq_system) or process schema (dq_system) "
+                        "when creating processes. Call this before building "
+                        "an EPD model to ask the user which schemas to use."
+                    ),
+                    inputSchema={"type": "object", "properties": {}},
+                    annotations=READONLY,
+                ),
+                Tool(
                     name="set_database_family",
                     description=(
                         "Set the database family from user input. Call this "
@@ -1054,10 +1118,28 @@ class OpenLCAMCPServer:
                                 "type": "string",
                                 "description": "Process description (optional)",
                             },
+                            "flow_schema": {
+                                "type": "string",
+                                "description": (
+                                    "Name or UUID of a DQ system to set as "
+                                    "the flow schema (exchange_dq_system). "
+                                    "Use list_dq_systems to find available "
+                                    "options. Optional."
+                                ),
+                            },
+                            "process_schema": {
+                                "type": "string",
+                                "description": (
+                                    "Name or UUID of a DQ system to set as "
+                                    "the process schema (dq_system). "
+                                    "Use list_dq_systems to find available "
+                                    "options. Optional."
+                                ),
+                            },
                         },
                         "required": ["name", "category", "exchanges"],
                     },
-                
+
                     annotations=WRITE,
                 ),
                 Tool(
@@ -1867,6 +1949,9 @@ class OpenLCAMCPServer:
         if name == "database_info":
             return self.lca.get_database_info()
 
+        elif name == "list_dq_systems":
+            return self.lca.list_dq_systems()
+
         elif name == "set_database_family":
             return self.lca.set_database_family(args["family"])
 
@@ -1913,7 +1998,10 @@ class OpenLCAMCPServer:
                 args["category"],
                 args["exchanges"],
                 args.get("parameters"),
-                args.get("description", ""))
+                args.get("description", ""),
+                args.get("location"),
+                args.get("flow_schema"),
+                args.get("process_schema"))
 
         elif name == "edit_process":
             return self.lca.edit_process(
