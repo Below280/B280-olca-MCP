@@ -1900,7 +1900,15 @@ class OpenLCAMCPServer:
         PRESENTATION_HINT = (
             "Formatting note: these results are best presented as a "
             "chart or table rather than narrated as prose. A short "
-            "summary sentence followed by a visual is ideal."
+            "summary sentence followed by a visual is ideal.\n\n"
+            "IMPORTANT: Each impact category has its own unit and "
+            "scale. Categories are NOT comparable by magnitude — "
+            "e.g. 2 billion kBq (ionizing radiation) does not mean "
+            "a larger environmental problem than 6 kg CO2eq (global "
+            "warming). Never normalise categories onto a single axis "
+            "or rank them by raw value. Present each category with "
+            "its own value and unit. If a comparative view is needed, "
+            "use the normalised or endpoint-level method instead."
         )
 
         async def handle_call_tool(ctx, params):

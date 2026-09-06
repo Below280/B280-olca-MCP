@@ -18,6 +18,7 @@ import uuid
 import urllib.request
 import urllib.parse
 import json as json_module
+import re
 import threading
 
 logger = logging.getLogger(__name__)
@@ -631,11 +632,17 @@ class LCAFunctions:
     def _clean_param_segment(text: str, length: int = 10) -> str:
         """Normalise one segment of an auto-parameter name.
 
-        Spaces and commas become underscores, repeated underscores
-        collapse, and the result is truncated to `length` characters.
+        Every character that isn't a letter, digit, or underscore
+        is replaced with an underscore, repeated underscores collapse,
+        and the result is truncated to ``length`` characters.
+
+        Previous versions only handled commas and spaces, letting
+        semicolons, hyphens, parentheses, and slashes through.
+        FLCAC flow names like 'Steel; sections; at plant' produced
+        parameter names containing ';' which broke formula evaluation.
         """
         text = (text or "").strip()
-        text = text.replace(",", "_").replace(" ", "_")
+        text = re.sub(r'[^a-zA-Z0-9_]', '_', text)
         while "__" in text:
             text = text.replace("__", "_")
         return text.strip("_")[:length]
@@ -645,18 +652,23 @@ class LCAFunctions:
                          used_names: Optional[set] = None) -> str:
         """Build an auto-parameter name in Below280's convention:
 
-            NN_processname__flowname_unit
+            pNN_processname__flowname_unit
 
-        NN is a zero-padded two-digit index (guarantees uniqueness
-        within the process), each name segment is truncated to
-        10 characters with spaces/commas normalised to underscores,
-        and the process/flow segments are joined with a DOUBLE
-        underscore so the process-name/flow-name boundary stays
-        visually distinct from the other single-underscore joins.
+        pNN is a letter-prefixed zero-padded two-digit index
+        (guarantees uniqueness within the process and produces a
+        valid identifier — openLCA's formula evaluator requires
+        names to start with a letter or underscore, not a digit),
+        the process and unit segments are truncated to 10 characters
+        and the flow segment to 20 (flow names like 'BRIDGE |
+        Steel sections | kg' need the extra room), with
+        non-alphanumeric characters normalised to underscores, and
+        the process/flow segments are joined with a DOUBLE underscore
+        so the process-name/flow-name boundary stays visually
+        distinct from the other single-underscore joins.
         """
         base = (
-            f"{index:02d}_{self._clean_param_segment(process_name)}"
-            f"__{self._clean_param_segment(flow_name)}"
+            f"p{index:02d}_{self._clean_param_segment(process_name)}"
+            f"__{self._clean_param_segment(flow_name, 20)}"
             f"_{self._clean_param_segment(unit_name)}"
         )
         name = base
@@ -2042,10 +2054,6 @@ class LCAFunctions:
 
                 self.client.put(system)
 
-                # Clear the product system cache so it shows up immediately
-                if "ProductSystem" in self._cache:
-                    del self._cache["ProductSystem"]
-
                 # Read back the system to report which providers were linked
                 linked_system = self.client.get(o.ProductSystem, system_ref.id)
                 links = self._extract_links(linked_system)
@@ -2090,6 +2098,14 @@ class LCAFunctions:
                         ),
                     }
                 return {"error": str(e)}
+            finally:
+                # BUG-07: Always invalidate the ProductSystem cache after
+                # a creation attempt. Previously this was only inside the
+                # try block's success path, so a timeout that still created
+                # the system on the Java side left the cache stale — the
+                # next call's duplicate check wouldn't see it and would
+                # create another copy.
+                self._cache.pop("ProductSystem", None)
 
     def _extract_links(self, system) -> List[Dict]:
         """Extract process links from a product system."""
