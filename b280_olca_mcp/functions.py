@@ -23,6 +23,74 @@ import threading
 
 logger = logging.getLogger(__name__)
 
+# ── input validation helpers ──────────────────────────────────
+
+def _validate_category(category: str) -> Optional[str]:
+    """Return an error message if the category contains path traversal, else None."""
+    if not category:
+        return None
+    if '/..' in category or '../' in category or category == '..':
+        return (
+            f"Category '{category}' contains path traversal sequences (..). "
+            f"Use a plain category path like 'Processes/Energy'."
+        )
+    return None
+
+
+def _validate_param_name(name: str, index: int = 0) -> Optional[str]:
+    """Return an error message if a parameter name is invalid, else None."""
+    if not name or not name.strip():
+        return f"Parameter {index}: name cannot be empty."
+    if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', name):
+        return (
+            f"Parameter {index}: name '{name}' is invalid. "
+            f"Parameter names must start with a letter or underscore "
+            f"and contain only letters, digits, and underscores."
+        )
+    return None
+
+
+_FORMULA_ALLOWED = re.compile(
+    r'^[A-Za-z0-9_\s\.\+\-\*/\(\),\^%<>=!&|?:]+$'
+)
+
+def _validate_formula(formula: str, index: int = 0) -> Optional[str]:
+    """Return an error message if a formula contains suspicious content, else None."""
+    if not formula:
+        return None
+    # Reject anything with import, exec, eval, open, os., sys., subprocess
+    dangerous = re.search(
+        r'(__import__|import\s*\(|exec|eval|open\s*\(|os\.|sys\.|subprocess)',
+        formula,
+    )
+    if dangerous:
+        return (
+            f"Exchange {index}: formula contains disallowed pattern "
+            f"'{dangerous.group()}'. Formulas should contain only "
+            f"arithmetic expressions and parameter names."
+        )
+    # Reject characters outside the allowed set for openLCA formulas
+    if not _FORMULA_ALLOWED.match(formula):
+        bad_chars = set(c for c in formula if not re.match(r'[A-Za-z0-9_\s\.\+\-\*/\(\),\^%<>=!&|?:]', c))
+        return (
+            f"Exchange {index}: formula contains invalid characters: "
+            f"{bad_chars}. openLCA formulas support arithmetic "
+            f"expressions, parameter names, and functions like "
+            f"min(), max(), abs(), sqrt(), ln(), exp()."
+        )
+    return None
+
+
+def _validate_uuid(value: str, field_name: str = "ID") -> Optional[str]:
+    """Return an error message if the value is not a valid UUID, else None."""
+    if not value:
+        return None
+    try:
+        uuid.UUID(value)
+        return None
+    except (ValueError, AttributeError):
+        return f"{field_name} '{value}' is not a valid UUID."
+
 
 class LCAFunctions:
 
@@ -233,10 +301,13 @@ class LCAFunctions:
                          location_filter: str = "",
                          limit: int = 20) -> Dict:
         """Search processes by name, category, and/or location."""
-        # W01: Clamp limit to sensible range
+        # V06: Reject invalid limits
         MAX_SEARCH_LIMIT = 200
         if limit <= 0:
-            limit = 20  # treat 0 or negative as default
+            return {
+                "error": f"limit must be a positive integer (got {limit}). "
+                         f"Use 1–{MAX_SEARCH_LIMIT}."
+            }
         elif limit > MAX_SEARCH_LIMIT:
             limit = MAX_SEARCH_LIMIT
 
@@ -276,10 +347,13 @@ class LCAFunctions:
                      category_filter: str = "",
                      limit: int = 20) -> Dict:
         """Search flows by name and/or category folder."""
-        # W01: Clamp limit to sensible range
+        # V06: Reject invalid limits
         MAX_SEARCH_LIMIT = 200
         if limit <= 0:
-            limit = 20
+            return {
+                "error": f"limit must be a positive integer (got {limit}). "
+                         f"Use 1–{MAX_SEARCH_LIMIT}."
+            }
         elif limit > MAX_SEARCH_LIMIT:
             limit = MAX_SEARCH_LIMIT
 
@@ -766,6 +840,11 @@ class LCAFunctions:
         if not name or not name.strip():
             return {"error": "Flow name cannot be empty or whitespace-only."}
 
+        # V01: Reject path traversal in category
+        cat_err = _validate_category(category)
+        if cat_err:
+            return {"error": cat_err}
+
         # W04: Length limits
         if len(name) > 250:
             return {
@@ -852,6 +931,17 @@ class LCAFunctions:
         # B01: Reject empty or whitespace-only names
         if not name or not name.strip():
             return {"error": "Bridge name cannot be empty or whitespace-only."}
+
+        # V01: Reject path traversal in category
+        cat_err = _validate_category(category)
+        if cat_err:
+            return {"error": cat_err}
+
+        # V05: Validate provider_id is a valid UUID
+        if provider_id:
+            uuid_err = _validate_uuid(provider_id, "provider_id")
+            if uuid_err:
+                return {"error": uuid_err}
 
         # W04: Length limits
         if len(name) > 250:
@@ -1014,6 +1104,11 @@ class LCAFunctions:
             if not name or not name.strip():
                 return {"error": "Process name cannot be empty or whitespace-only."}
 
+            # V01: Reject path traversal in category
+            cat_err = _validate_category(category)
+            if cat_err:
+                return {"error": cat_err}
+
             # W04: Length limits on name and category
             if len(name) > 250:
                 return {
@@ -1047,6 +1142,27 @@ class LCAFunctions:
                              f"but exactly one is required. Mark only the "
                              f"main output exchange with is_qref=True.",
                 }
+
+            # V02: Validate parameter names
+            if parameters:
+                for i, pd in enumerate(parameters):
+                    param_err = _validate_param_name(pd.get("name", ""), i)
+                    if param_err:
+                        return {"error": param_err}
+
+            # V03: Reject negative amounts on quantitative references
+            for i, ex_def in enumerate(exchanges):
+                if ex_def.get("is_qref") and not ex_def.get("formula"):
+                    try:
+                        amt = float(ex_def.get("amount", 0.0))
+                        if amt < 0:
+                            return {
+                                "error": f"Exchange {i}: quantitative reference "
+                                         f"amount ({amt}) cannot be negative. "
+                                         f"Use a positive value."
+                            }
+                    except (ValueError, TypeError):
+                        pass  # caught later in B06
 
             # Pre-flight: check if this process already exists
             existing = self._get_descriptors(o.Process)
@@ -1142,21 +1258,11 @@ class LCAFunctions:
                                      f"a valid number.",
                         }
 
-                # B11: Basic formula validation
+                # B11/V04: Formula validation
                 if formula_check:
-                    # Reject obviously dangerous patterns
-                    dangerous = re.search(
-                        r'(__import__|exec|eval|open|os\.|sys\.|subprocess)',
-                        formula_check,
-                    )
-                    if dangerous:
-                        return {
-                            "error": f"Exchange {i}: formula contains "
-                                     f"disallowed pattern "
-                                     f"'{dangerous.group()}'. Formulas "
-                                     f"should contain only arithmetic "
-                                     f"expressions and parameter names.",
-                        }
+                    formula_err = _validate_formula(formula_check, i)
+                    if formula_err:
+                        return {"error": formula_err}
                     # Warn on very long formulas
                     if len(formula_check) > 500:
                         exchange_warnings.append(
@@ -1312,6 +1418,37 @@ class LCAFunctions:
         update_exchanges now supports provider_id in addition to
         amount, formula, and unit.
         """
+        # V01: Reject path traversal in category
+        if category is not None:
+            cat_err = _validate_category(category)
+            if cat_err:
+                return {"error": cat_err}
+
+        # V02: Validate parameter names on add_parameters
+        if add_parameters:
+            for i, pd in enumerate(add_parameters):
+                param_err = _validate_param_name(pd.get("name", ""), i)
+                if param_err:
+                    return {"error": param_err}
+
+        # V04: Validate formulas on update_exchanges
+        if update_exchanges:
+            for i, upd in enumerate(update_exchanges):
+                formula = upd.get("formula")
+                if formula:
+                    formula_err = _validate_formula(formula, i)
+                    if formula_err:
+                        return {"error": formula_err}
+
+        # V04: Validate formulas on add_exchanges
+        if add_exchanges:
+            for i, ex_def in enumerate(add_exchanges):
+                formula = ex_def.get("formula")
+                if formula:
+                    formula_err = _validate_formula(formula, i)
+                    if formula_err:
+                        return {"error": formula_err}
+
         try:
             process = self.client.get(o.Process, process_id)
             if not process:
@@ -1612,6 +1749,10 @@ class LCAFunctions:
 
         Convention: model folders start with '00: ' (e.g. '00: My Project').
         """
+        # V01: Reject path traversal in category
+        cat_err = _validate_category(category)
+        if cat_err:
+            return {"error": cat_err}
         try:
             all_processes = self._get_descriptors(o.Process)
 
@@ -2157,6 +2298,12 @@ class LCAFunctions:
         target_flow_property (e.g. 'Volume', 'Mass'), and category
         after creation. Same pattern as EB_full_products.py.
         """
+        # V01: Reject path traversal in category
+        if category:
+            cat_err = _validate_category(category)
+            if cat_err:
+                return {"error": cat_err}
+
         process = self._resolve_process(process_ref)
         if not process:
             return {"error": f"Process not found: {process_ref}"}
@@ -2586,6 +2733,13 @@ class LCAFunctions:
         varies between olca-ipc versions. Collects per-iteration
         impact totals and computes statistics.
         """
+        # V07: Reject non-positive iterations
+        if iterations <= 0:
+            return {
+                "error": f"iterations must be a positive integer (got {iterations}). "
+                         f"Use at least 100 for meaningful results."
+            }
+
         system = self._resolve_system(system_ref)
         if not system:
             return {"error": f"Product system not found: {system_ref}"}
@@ -2854,6 +3008,13 @@ class LCAFunctions:
         Uses the same ParameterRedef + CalculationSetup pattern as
         B280_olca_scenarios.py.
         """
+        # V08: Reject empty scenarios
+        if not scenarios:
+            return {
+                "error": "At least one scenario is required. "
+                         "Pass scenarios as {name: {param: value, ...}, ...}."
+            }
+
         system = self._resolve_system(system_ref)
         if not system:
             return {"error": f"Product system not found: {system_ref}"}

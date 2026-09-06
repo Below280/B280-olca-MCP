@@ -1029,6 +1029,10 @@ class OpenLCAMCPServer:
                                 "type": "string",
                                 "description": "UUID of the background process to link to (optional, can be set later in openLCA)",
                             },
+                            "provider_flow_id": {
+                                "type": "string",
+                                "description": "UUID of the specific flow to use from the provider (optional, auto-detected from provider's qref if omitted)",
+                            },
                             "waste": {
                                 "type": "boolean",
                                 "description": "True for waste treatment bridges (default: false)",
@@ -2018,6 +2022,7 @@ class OpenLCAMCPServer:
                 args["unit"],
                 args.get("category", ""),
                 args.get("provider_id"),
+                args.get("provider_flow_id"),
                 args.get("waste", False))
 
         elif name == "create_process":
