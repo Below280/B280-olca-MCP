@@ -72,6 +72,19 @@ EXTERNAL = ToolAnnotations(
     openWorldHint=True,
 )
 
+# Shared property definition for the allocation parameter on calculation tools.
+ALLOCATION_PROPERTY = {
+    "type": "string",
+    "description": (
+        "Allocation method for multi-output processes. "
+        "Options: 'as_defined' (use factors set in each process, "
+        "the openLCA GUI default), 'physical', 'economic', 'causal', "
+        "'none'. Default: 'as_defined'."
+    ),
+    "enum": ["as_defined", "physical", "economic", "causal", "none"],
+    "default": "as_defined",
+}
+
 
 def validate_file_path(path: str, must_exist: bool = False) -> str:
     """Resolve and validate a file path. Blocks path traversal."""
@@ -1460,6 +1473,7 @@ class OpenLCAMCPServer:
                                 "type": "string",
                                 "description": "Impact assessment method name or ID",
                             },
+                            "allocation": ALLOCATION_PROPERTY,
                         },
                         "required": ["system", "method"],
                     },
@@ -1501,10 +1515,11 @@ class OpenLCAMCPServer:
                                 "items": {"type": "string"},
                                 "description": "Filter to specific impact categories by name substring (optional, default: all)",
                             },
+                            "allocation": ALLOCATION_PROPERTY,
                         },
                         "required": ["system", "method"],
                     },
-                
+
                     annotations=CALCULATE,
                 ),
                 Tool(
@@ -1531,10 +1546,11 @@ class OpenLCAMCPServer:
                                 "description": "Number of MC iterations (default: 1000)",
                                 "default": 1000,
                             },
+                            "allocation": ALLOCATION_PROPERTY,
                         },
                         "required": ["system", "method"],
                     },
-                
+
                     annotations=CALCULATE,
                 ),
                 Tool(
@@ -1563,10 +1579,11 @@ class OpenLCAMCPServer:
                                 "description": "Maximum flows to return (default: 50)",
                                 "default": 50,
                             },
+                            "allocation": ALLOCATION_PROPERTY,
                         },
                         "required": ["system", "method"],
                     },
-                
+
                     annotations=CALCULATE,
                 ),
                 Tool(
@@ -1624,10 +1641,11 @@ class OpenLCAMCPServer:
                                     "additionalProperties": {"type": "number"},
                                 },
                             },
+                            "allocation": ALLOCATION_PROPERTY,
                         },
                         "required": ["system", "method", "scenarios"],
                     },
-                
+
                     annotations=CALCULATE,
                 ),
                 Tool(
@@ -1662,10 +1680,11 @@ class OpenLCAMCPServer:
                                     "saves next to the input CSV file."
                                 ),
                             },
+                            "allocation": ALLOCATION_PROPERTY,
                         },
                         "required": ["system", "method", "csv_path"],
                     },
-                
+
                     annotations=FILE_WRITE,
                 ),
                 Tool(
@@ -1698,10 +1717,11 @@ class OpenLCAMCPServer:
                                 "description": "Variation percentage (default: 20)",
                                 "default": 20,
                             },
+                            "allocation": ALLOCATION_PROPERTY,
                         },
                         "required": ["system", "method", "parameters"],
                     },
-                
+
                     annotations=CALCULATE,
                 ),
                 Tool(
@@ -1741,10 +1761,11 @@ class OpenLCAMCPServer:
                                     "saves next to the input CSV file."
                                 ),
                             },
+                            "allocation": ALLOCATION_PROPERTY,
                         },
                         "required": ["system", "method", "csv_path"],
                     },
-                
+
                     annotations=FILE_WRITE,
                 ),
                 Tool(
@@ -2083,7 +2104,8 @@ class OpenLCAMCPServer:
 
         elif name == "calculate":
             return self.lca.calculate_impacts(
-                args["system"], args["method"])
+                args["system"], args["method"],
+                allocation=args.get("allocation"))
 
         elif name == "contribution_analysis":
             return self.lca.contribution_analysis(
@@ -2091,26 +2113,30 @@ class OpenLCAMCPServer:
                 args["method"],
                 args.get("threshold_pct", 0.1),
                 args.get("max_contributors", 30),
-                args.get("categories"))
+                args.get("categories"),
+                allocation=args.get("allocation"))
 
         elif name == "monte_carlo":
             return self.lca.monte_carlo(
                 args["system"],
                 args["method"],
-                args.get("iterations", 1000))
+                args.get("iterations", 1000),
+                allocation=args.get("allocation"))
 
         elif name == "inventory_flows":
             return self.lca.inventory_flows(
                 args["system"],
                 args["method"],
-                max_flows=args.get("max_flows", 50))
+                max_flows=args.get("max_flows", 50),
+                allocation=args.get("allocation"))
 
         elif name == "data_quality":
             return self.lca.get_data_quality(args["process_id"])
 
         elif name == "scenarios":
             return self.lca.run_scenarios(
-                args["system"], args["method"], args["scenarios"])
+                args["system"], args["method"], args["scenarios"],
+                allocation=args.get("allocation"))
 
         elif name == "scenarios_csv":
             csv_path = validate_file_path(args["csv_path"], must_exist=True)
@@ -2119,14 +2145,16 @@ class OpenLCAMCPServer:
                 args["system"],
                 args["method"],
                 csv_path,
-                output_path)
+                output_path,
+                allocation=args.get("allocation"))
 
         elif name == "sensitivity":
             return self.lca.run_sensitivity(
                 args["system"],
                 args["method"],
                 args["parameters"],
-                args.get("variation_pct", 20.0))
+                args.get("variation_pct", 20.0),
+                allocation=args.get("allocation"))
 
         elif name == "sensitivity_csv":
             csv_path = validate_file_path(args["csv_path"], must_exist=True)
@@ -2136,7 +2164,8 @@ class OpenLCAMCPServer:
                 args["method"],
                 csv_path,
                 args.get("variation_pct", 20.0),
-                output_path)
+                output_path,
+                allocation=args.get("allocation"))
 
         elif name == "search_processes":
             return self.lca.search_processes(

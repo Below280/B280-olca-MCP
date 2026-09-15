@@ -138,6 +138,34 @@ class LCAFunctions:
         """Find a process by ID or name. Returns descriptor or None."""
         return self._resolve(o.Process, ref)
 
+    # Allocation method mapping — keys are the accepted string values
+    # from the tool parameter; values are olca_schema enum members.
+    ALLOCATION_TYPES = {
+        "as_defined":  o.AllocationType.USE_DEFAULT_ALLOCATION,
+        "physical":    o.AllocationType.PHYSICAL_ALLOCATION,
+        "economic":    o.AllocationType.ECONOMIC_ALLOCATION,
+        "causal":      o.AllocationType.CAUSAL_ALLOCATION,
+        "none":        o.AllocationType.NO_ALLOCATION,
+    }
+
+    def _resolve_allocation(self, value: Optional[str] = None) -> o.AllocationType:
+        """Map an allocation parameter string to an olca AllocationType.
+
+        Returns USE_DEFAULT_ALLOCATION when *value* is None or omitted,
+        matching the openLCA GUI default ("As defined in processes").
+        """
+        if value is None:
+            return o.AllocationType.USE_DEFAULT_ALLOCATION
+        key = value.strip().lower()
+        alloc = self.ALLOCATION_TYPES.get(key)
+        if alloc is None:
+            valid = ", ".join(sorted(self.ALLOCATION_TYPES.keys()))
+            raise ValueError(
+                f"Unknown allocation method '{value}'. "
+                f"Valid options: {valid}"
+            )
+        return alloc
+
     def _impacts_to_list(self, impacts) -> List[Dict]:
         """Convert impact results to JSON-serialisable list."""
         return [{
@@ -2591,7 +2619,8 @@ class LCAFunctions:
     # ── calculations ─────────────────────────────────────────
 
     def calculate_impacts(self, system_ref: str,
-                          method_ref: str) -> Dict:
+                          method_ref: str,
+                          allocation: Optional[str] = None) -> Dict:
         """Run a baseline impact calculation for a product system."""
         system = self._resolve_system(system_ref)
         if not system:
@@ -2601,7 +2630,9 @@ class LCAFunctions:
         if not method:
             return {"error": f"Impact method not found: {method_ref}"}
 
-        setup = o.CalculationSetup(target=system, impact_method=method)
+        setup = o.CalculationSetup(
+            target=system, impact_method=method,
+            allocation=self._resolve_allocation(allocation))
         result = self.client.calculate(setup)
         result.wait_until_ready()
 
@@ -2618,7 +2649,8 @@ class LCAFunctions:
     def contribution_analysis(self, system_ref: str, method_ref: str,
                               threshold_pct: float = 0.1,
                               max_contributors: int = 30,
-                              categories: Optional[List[str]] = None) -> Dict:
+                              categories: Optional[List[str]] = None,
+                              allocation: Optional[str] = None) -> Dict:
         """
         Process-level contribution analysis using the verified pattern
         from gurit_dq_analysis.py:
@@ -2642,7 +2674,9 @@ class LCAFunctions:
         if not method:
             return {"error": f"Impact method not found: {method_ref}"}
 
-        setup = o.CalculationSetup(target=system, impact_method=method)
+        setup = o.CalculationSetup(
+            target=system, impact_method=method,
+            allocation=self._resolve_allocation(allocation))
         result = self.client.calculate(setup)
         result.wait_until_ready()
 
@@ -2725,7 +2759,8 @@ class LCAFunctions:
             result.dispose()
 
     def monte_carlo(self, system_ref: str, method_ref: str,
-                    iterations: int = 1000) -> Dict:
+                    iterations: int = 1000,
+                    allocation: Optional[str] = None) -> Dict:
         """
         Run Monte Carlo uncertainty simulation.
 
@@ -2755,6 +2790,7 @@ class LCAFunctions:
             setup = o.CalculationSetup(
                 target=system,
                 impact_method=method,
+                allocation=self._resolve_allocation(allocation),
             )
 
             # Try setting number_of_runs as attribute (works in some versions)
@@ -2865,7 +2901,8 @@ class LCAFunctions:
     def inventory_flows(self, system_ref: str,
                         method_ref: str,
                         threshold: float = 1e-10,
-                        max_flows: int = 50) -> Dict:
+                        max_flows: int = 50,
+                        allocation: Optional[str] = None) -> Dict:
         """
         Get elementary flow inventory results (LCI).
 
@@ -2881,7 +2918,9 @@ class LCAFunctions:
         if not method:
             return {"error": f"Impact method not found: {method_ref}"}
 
-        setup = o.CalculationSetup(target=system, impact_method=method)
+        setup = o.CalculationSetup(
+            target=system, impact_method=method,
+            allocation=self._resolve_allocation(allocation))
         result = self.client.calculate(setup)
         result.wait_until_ready()
 
@@ -2999,7 +3038,8 @@ class LCAFunctions:
             return {"error": str(e)}
 
     def run_scenarios(self, system_ref: str, method_ref: str,
-                      scenarios: Dict[str, Dict[str, float]]) -> Dict:
+                      scenarios: Dict[str, Dict[str, float]],
+                      allocation: Optional[str] = None) -> Dict:
         """
         Run scenario calculations.
 
@@ -3053,6 +3093,7 @@ class LCAFunctions:
                 target=system,
                 impact_method=method,
                 parameters=param_redefs,
+                allocation=self._resolve_allocation(allocation),
             )
             result = self.client.calculate(setup)
             result.wait_until_ready()
@@ -3132,7 +3173,8 @@ class LCAFunctions:
 
     def run_scenarios_csv(self, system_ref: str, method_ref: str,
                           csv_path: str,
-                          output_path: str = "") -> Dict:
+                          output_path: str = "",
+                          allocation: Optional[str] = None) -> Dict:
         """
         Full scenario pipeline: read CSV, calculate, write results.
 
@@ -3155,7 +3197,8 @@ class LCAFunctions:
 
         # Run the scenarios
         calc_result = self.run_scenarios(
-            system_ref, method_ref, csv_data["scenarios"]
+            system_ref, method_ref, csv_data["scenarios"],
+            allocation=allocation
         )
         if "error" in calc_result:
             return calc_result
@@ -3210,7 +3253,8 @@ class LCAFunctions:
 
     def run_sensitivity(self, system_ref: str, method_ref: str,
                         parameter_names: List[str],
-                        variation_pct: float = 20.0) -> Dict:
+                        variation_pct: float = 20.0,
+                        allocation: Optional[str] = None) -> Dict:
         """
         Run +/- sensitivity analysis on named parameters.
 
@@ -3262,7 +3306,9 @@ class LCAFunctions:
 
         # Baseline calculation
         logger.info("Running baseline calculation")
-        setup = o.CalculationSetup(target=system, impact_method=method)
+        alloc = self._resolve_allocation(allocation)
+        setup = o.CalculationSetup(
+            target=system, impact_method=method, allocation=alloc)
         result = self.client.calculate(setup)
         result.wait_until_ready()
 
@@ -3299,6 +3345,7 @@ class LCAFunctions:
                     target=system,
                     impact_method=method,
                     parameters=[param_redef],
+                    allocation=alloc,
                 )
                 result = self.client.calculate(setup)
                 result.wait_until_ready()
@@ -3358,7 +3405,8 @@ class LCAFunctions:
 
     def run_sensitivity_csv(self, system_ref: str, method_ref: str,
                             csv_path: str, variation_pct: float = 20.0,
-                            output_path: str = "") -> Dict:
+                            output_path: str = "",
+                            allocation: Optional[str] = None) -> Dict:
         """
         Full sensitivity pipeline: read CSV, calculate, write results.
 
@@ -3374,7 +3422,8 @@ class LCAFunctions:
 
         # Run sensitivity
         calc_result = self.run_sensitivity(
-            system_ref, method_ref, parameter_names, variation_pct
+            system_ref, method_ref, parameter_names, variation_pct,
+            allocation=allocation
         )
         if "error" in calc_result:
             return calc_result
