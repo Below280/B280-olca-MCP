@@ -324,6 +324,90 @@ class LCAFunctions:
             "parameters": results,
         }
 
+    def create_global_parameter(self, name: str,
+                                value: Optional[float] = None,
+                                formula: Optional[str] = None,
+                                description: str = "") -> Dict:
+        """
+        Create or update a global (database-level) parameter.
+
+        Give a value for an input parameter, or a formula for a
+        dependent parameter that openLCA calculates from others
+        (e.g. formula="cement_mass * water_ratio"). Any process
+        formula in the database can reference a global parameter by
+        name, and scenarios and sensitivity redefine it once for the
+        whole model.
+
+        If a global parameter with this name already exists it is
+        updated in place (same ID) and the previous value/formula is
+        returned, so callers can tell when they've changed something
+        another model may also use.
+        """
+        err = _validate_param_name(name, 0)
+        if err:
+            return {"error": err.replace("Parameter 0: ", "")}
+        if (value is None) == (not formula):
+            return {"error": "Give exactly one of value (input parameter) "
+                             "or formula (dependent parameter)."}
+        if formula:
+            ferr = _validate_formula(formula, 0)
+            if ferr:
+                return {"error": ferr.replace("Exchange 0: ", "")}
+            if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])",
+                         formula):
+                return {"error": f"Formula for '{name}' refers to itself."}
+
+        try:
+            existing = None
+            for desc in self._get_descriptors(o.Parameter):
+                if desc.name == name:
+                    existing = self.client.get(o.Parameter, desc.id)
+                    break
+
+            if existing:
+                previous = {"value": existing.value,
+                            "formula": existing.formula or None,
+                            "is_input": bool(existing.is_input_parameter)}
+                param = existing
+            else:
+                previous = None
+                param = o.Parameter()
+                param.id = str(uuid.uuid4())
+                param.name = name
+                param.parameter_scope = o.ParameterScope.GLOBAL_SCOPE
+
+            if formula:
+                param.formula = formula
+                param.value = None
+                param.is_input_parameter = False
+            else:
+                param.value = float(value)
+                param.formula = None
+                param.is_input_parameter = True
+            if description:
+                param.description = description
+
+            ref = self.client.put(param)
+            self._cache.pop("Parameter", None)
+
+            result = {
+                "parameter_id": ref.id,
+                "name": name,
+                "scope": "global",
+                "is_input": formula is None,
+                "value": None if formula else float(value),
+                "formula": formula or None,
+                "already_existed": existing is not None,
+            }
+            if previous:
+                result["previous"] = previous
+                if (previous["value"] != result["value"]
+                        or previous["formula"] != result["formula"]):
+                    result["changed"] = True
+            return result
+        except Exception as ex:
+            return {"error": str(ex)}
+
     def search_processes(self, search_term: str,
                          category_filter: str = "",
                          location_filter: str = "",
@@ -1177,6 +1261,14 @@ class LCAFunctions:
                     param_err = _validate_param_name(pd.get("name", ""), i)
                     if param_err:
                         return {"error": param_err}
+                    if pd.get("formula"):
+                        formula_err = _validate_formula(pd["formula"], i)
+                        if formula_err:
+                            return {"error": formula_err.replace(
+                                "Exchange", "Parameter", 1)}
+                    elif "value" not in pd:
+                        return {"error": f"Parameter {i}: give either a "
+                                         f"value or a formula."}
 
             # V03: Reject negative amounts on quantitative references
             for i, ex_def in enumerate(exchanges):
@@ -1382,9 +1474,14 @@ class LCAFunctions:
                     param = o.Parameter()
                     param.id = str(uuid.uuid4())
                     param.name = pd["name"]
-                    param.value = float(pd.get("value", 0.0))
                     param.parameter_scope = o.ParameterScope.PROCESS_SCOPE
-                    param.is_input_parameter = True
+                    if pd.get("formula"):
+                        # Dependent parameter: openLCA calculates it
+                        param.formula = pd["formula"]
+                        param.is_input_parameter = False
+                    else:
+                        param.value = float(pd.get("value", 0.0))
+                        param.is_input_parameter = True
                     param.description = pd.get("description", "")
                     param_objects.append(param)
             if param_objects:
@@ -3037,6 +3134,67 @@ class LCAFunctions:
         except Exception as e:
             return {"error": str(e)}
 
+    def _parameter_targets(self, system,
+                           names=None) -> Dict[str, List[Dict]]:
+        """Every redefinable copy of every parameter in a system.
+
+        Returns {name: [{"context": Ref|None, "value": float,
+        "is_input": bool}, ...]}.
+
+        The same name can exist in several processes (each with its
+        own process-scope copy) and as a global parameter. Earlier
+        versions built {name: context} with a dict, so only the last
+        copy survived and a scenario changed one process but not the
+        others. Every copy is kept here so callers can redefine all
+        of them.
+
+        Global parameters are added from the database if openLCA
+        didn't return them with the system, so a global referenced
+        in any formula can always be redefined. Pass names to limit
+        the global lookup to the parameters actually needed.
+        """
+        targets: Dict[str, List[Dict]] = {}
+        for p in self.client.get_parameters(o.ProductSystem, system.id):
+            targets.setdefault(p.name, []).append({
+                "context": p.context,
+                "value": p.value,
+                "is_input": True,
+            })
+
+        have_global = {n for n, copies in targets.items()
+                       if any(c["context"] is None for c in copies)}
+        for desc in self._get_descriptors(o.Parameter):
+            if desc.name in have_global:
+                continue
+            if names is not None and desc.name not in names:
+                continue
+            param = self.client.get(o.Parameter, desc.id)
+            if not param:
+                continue
+            targets.setdefault(param.name, []).append({
+                "context": None,
+                "value": param.value,
+                "is_input": bool(getattr(param, "is_input_parameter", True)),
+            })
+        return targets
+
+    @staticmethod
+    def _split_targets(targets: Dict[str, List[Dict]],
+                       names) -> Dict[str, List]:
+        """Sort requested names into redefinable, dependent (formula
+        parameters, which openLCA calculates rather than accepts a
+        value for) and missing."""
+        ok, dependent, missing = [], [], []
+        for name in names:
+            copies = targets.get(name)
+            if not copies:
+                missing.append(name)
+            elif not any(c["is_input"] for c in copies):
+                dependent.append(name)
+            else:
+                ok.append(name)
+        return {"ok": ok, "dependent": dependent, "missing": missing}
+
     def run_scenarios(self, system_ref: str, method_ref: str,
                       scenarios: Dict[str, Dict[str, float]],
                       allocation: Optional[str] = None) -> Dict:
@@ -3063,17 +3221,22 @@ class LCAFunctions:
         if not method:
             return {"error": f"Impact method not found: {method_ref}"}
 
-        # Build context lookup once
-        system_params = self.client.get_parameters(o.ProductSystem, system.id)
-        context_by_name = {p.name: p.context for p in system_params}
-        known_param_names = set(context_by_name.keys())
+        # Every copy of every parameter, so a name shared by several
+        # processes is changed everywhere, not just in one of them
+        all_names = set()
+        for param_values in scenarios.values():
+            all_names.update(param_values.keys())
+        targets = self._parameter_targets(system, all_names)
 
         # B10: Collect all unique parameter names across scenarios
         # and warn about any that don't exist in the system
         all_scenario_params = set()
         for param_values in scenarios.values():
             all_scenario_params.update(param_values.keys())
-        missing_params = sorted(all_scenario_params - known_param_names)
+        split = self._split_targets(targets, sorted(all_scenario_params))
+        missing_params = split["missing"]
+        dependent_params = split["dependent"]
+        usable = set(split["ok"])
 
         results = {}
         for scenario_name, param_values in scenarios.items():
@@ -3083,10 +3246,12 @@ class LCAFunctions:
                 o.ParameterRedef(
                     name=name,
                     value=float(value),
-                    context=context_by_name.get(name),
+                    context=copy["context"],
                 )
                 for name, value in param_values.items()
-                if name in known_param_names  # B10: skip unknown params
+                if name in usable
+                for copy in targets[name]
+                if copy["is_input"]
             ]
 
             setup = o.CalculationSetup(
@@ -3110,12 +3275,28 @@ class LCAFunctions:
             "scenario_count": len(results),
             "results": results,
         }
+        shared = {n: len([c for c in targets[n] if c["is_input"]])
+                  for n in usable
+                  if len([c for c in targets[n] if c["is_input"]]) > 1}
+        if shared:
+            result["shared_parameters"] = shared
+        warnings = []
         if missing_params:
             result["missing"] = missing_params
-            result["warning"] = (
+            warnings.append(
                 f"{len(missing_params)} parameter(s) not found in "
                 f"system and were ignored: {', '.join(missing_params[:10])}"
             )
+        if dependent_params:
+            result["dependent"] = dependent_params
+            warnings.append(
+                f"{len(dependent_params)} parameter(s) are calculated "
+                f"from formulas and can't be set directly; change the "
+                f"input parameters they depend on instead: "
+                f"{', '.join(dependent_params[:10])}"
+            )
+        if warnings:
+            result["warning"] = ". ".join(warnings)
         return result
 
     # ── CSV-based scenarios (mirrors B280_olca_scenarios.py) ──
@@ -3284,22 +3465,18 @@ class LCAFunctions:
                 f"Results above ~200% may not be physically meaningful."
             )
 
-        # Get system parameters and validate
-        system_params = self.client.get_parameters(o.ProductSystem, system.id)
-        params_by_name = {p.name: p for p in system_params}
-
-        testable = []
-        missing = []
-        for name in parameter_names:
-            if name in params_by_name:
-                testable.append(name)
-            else:
-                missing.append(name)
+        # Every copy of every parameter (see _parameter_targets)
+        targets = self._parameter_targets(system, set(parameter_names))
+        split = self._split_targets(targets, parameter_names)
+        testable = split["ok"]
+        missing = split["missing"]
+        dependent = split["dependent"]
 
         if not testable:
             return {
-                "error": "No matching parameters found in system",
+                "error": "No matching input parameters found in system",
                 "missing": missing,
+                "dependent": dependent,
             }
 
         variation_factor = variation_pct / 100.0
@@ -3326,25 +3503,34 @@ class LCAFunctions:
         # Sensitivity runs
         sensitivity = {}
         for param_name in testable:
-            param_obj = params_by_name[param_name]
-            baseline_value = param_obj.value
-            logger.info(f"Varying: {param_name} (baseline: {baseline_value})")
+            copies = [c for c in targets[param_name] if c["is_input"]]
+            baseline_value = copies[0]["value"]
+            logger.info(f"Varying: {param_name} (baseline: {baseline_value}, "
+                        f"{len(copies)} cop{'y' if len(copies) == 1 else 'ies'})")
 
             sensitivity[param_name] = {"baseline_value": baseline_value}
+            if len(copies) > 1:
+                sensitivity[param_name]["copies"] = len(copies)
+                values = [c["value"] for c in copies]
+                if len(set(values)) > 1:
+                    sensitivity[param_name]["baseline_values"] = values
 
             for label, multiplier in [("minus", 1 - variation_factor),
                                       ("plus", 1 + variation_factor)]:
-                varied_value = baseline_value * multiplier
-
-                param_redef = o.ParameterRedef(
-                    name=param_name,
-                    value=varied_value,
-                    context=param_obj.context,
-                )
+                # Each copy moves by the same percentage from its own
+                # baseline, so the whole model is varied consistently
+                param_redefs = [
+                    o.ParameterRedef(
+                        name=param_name,
+                        value=c["value"] * multiplier,
+                        context=c["context"],
+                    )
+                    for c in copies
+                ]
                 setup = o.CalculationSetup(
                     target=system,
                     impact_method=method,
-                    parameters=[param_redef],
+                    parameters=param_redefs,
                     allocation=alloc,
                 )
                 result = self.client.calculate(setup)
@@ -3367,6 +3553,11 @@ class LCAFunctions:
             "tested": testable,
             "missing": missing,
         }
+        if dependent:
+            result["dependent"] = dependent
+            sensitivity_warnings.append(
+                f"Skipped formula (dependent) parameters, which can't be "
+                f"varied directly: {', '.join(dependent)}")
         if sensitivity_warnings:
             result["warnings"] = sensitivity_warnings
         return result

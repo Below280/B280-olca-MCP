@@ -1,6 +1,6 @@
 # Tool Reference
 
-Complete reference for all 31 tools in the openLCA MCP Server. Each entry shows the tool name, what it does, required and optional inputs, and an example prompt that would trigger it.
+Complete reference for all 32 tools in the openLCA MCP Server. Each entry shows the tool name, what it does, required and optional inputs, and an example prompt that would trigger it.
 
 ## Explore
 
@@ -133,6 +133,22 @@ Look up a unit by name and return its ID and associated flow property.
 ---
 
 ## Build
+
+### `create_global_parameter`
+
+Create or update a global (database-level) parameter. Give a value for an input parameter, or a formula for a dependent parameter that openLCA calculates from others. Any process formula in the database can refer to it by name, so a parameter shared by several processes is defined once and scenarios or sensitivity change it everywhere. If the name already exists it is updated in place, and the previous value is returned along with `changed: true` if anything differs.
+
+**Inputs:**
+- `name` (required): parameter name (letters, digits and underscores, not starting with a digit)
+- `value` (optional): value for an input parameter
+- `formula` (optional): formula for a dependent parameter, e.g. `cement_mass * water_ratio`
+- `description` (optional)
+
+Give exactly one of `value` or `formula`.
+
+**Example:** 'Make cement_mass a global parameter of 300, and water_mass a formula of cement_mass times 0.45'
+
+---
 
 ### `create_flow`
 

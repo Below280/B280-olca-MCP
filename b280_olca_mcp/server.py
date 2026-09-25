@@ -117,6 +117,7 @@ EXPLORE the database:
   find_unit             → look up units and flow properties
 
 BUILD a model:
+  create_global_parameter → database-level parameter (value or formula)
   create_flow           → make a product/waste/elementary flow
   create_bridge         → make a bridge flow + process (foreground-to-background link)
   create_process        → build a process with exchanges and parameters
@@ -957,6 +958,47 @@ class OpenLCAMCPServer:
                 ),
                 # ── model building tools ─────────────────
                 Tool(
+                    name="create_global_parameter",
+                    description=(
+                        "Create or update a GLOBAL (database-level) "
+                        "parameter. Give a value for an input parameter, "
+                        "or a formula for a dependent parameter that "
+                        "openLCA calculates from others (e.g. "
+                        "'cement_mass * water_ratio'). Process exchange "
+                        "formulas anywhere in the database can refer to "
+                        "it by name. Use global parameters for anything "
+                        "shared by several processes, so one scenario or "
+                        "sensitivity change applies to the whole model. "
+                        "If the name already exists it is updated in "
+                        "place and the previous value is returned; check "
+                        "'changed' before overwriting a parameter another "
+                        "model may use."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Parameter name (letters, digits, underscores; must not start with a digit)",
+                            },
+                            "value": {
+                                "type": "number",
+                                "description": "Value for an input parameter. Give this OR formula.",
+                            },
+                            "formula": {
+                                "type": "string",
+                                "description": "Formula for a dependent parameter, using other parameter names. Give this OR value.",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Optional description",
+                            },
+                        },
+                        "required": ["name"],
+                    },
+                    annotations=WRITE,
+                ),
+                Tool(
                     name="find_unit",
                     description=(
                         "Look up a unit by name (e.g. 'kg', 'kWh', 'm3') "
@@ -1138,15 +1180,22 @@ class OpenLCAMCPServer:
                             },
                             "parameters": {
                                 "type": "array",
-                                "description": "Process-scoped parameters (optional)",
+                                "description": (
+                                    "Process-scoped parameters (optional). "
+                                    "Give value for an input parameter or "
+                                    "formula for a dependent one. For "
+                                    "anything shared between processes, "
+                                    "use create_global_parameter instead."
+                                ),
                                 "items": {
                                     "type": "object",
                                     "properties": {
                                         "name": {"type": "string"},
                                         "value": {"type": "number"},
+                                        "formula": {"type": "string"},
                                         "description": {"type": "string"},
                                     },
-                                    "required": ["name", "value"],
+                                    "required": ["name"],
                                 },
                             },
                             "description": {
@@ -2030,6 +2079,13 @@ class OpenLCAMCPServer:
         elif name == "find_unit":
             return self.lca.find_unit(args["unit_name"])
 
+        elif name == "create_global_parameter":
+            return self.lca.create_global_parameter(
+                args["name"],
+                args.get("value"),
+                args.get("formula"),
+                args.get("description", ""))
+
         elif name == "create_flow":
             return self.lca.create_flow(
                 args["name"],
@@ -2218,6 +2274,7 @@ class OpenLCAMCPServer:
                 "title": "Build a model",
                 "description": "Create processes, flows, bridges, and product systems. Changes are saved to the database.",
                 "tools": [
+                    "create_global_parameter: make or update a database-level parameter (value or formula)",
                     "create_flow: make a product, waste, or elementary flow",
                     "create_bridge: make a bridge flow and process linking to a background database",
                     "create_process: build a process with exchanges and parameters",
