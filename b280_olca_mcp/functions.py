@@ -199,7 +199,9 @@ class LCAFunctions:
         List all DQ (Data Quality) systems in the database.
 
         Returns process schemas, flow schemas, and social schemas
-        available for assignment to processes. The user picks which
+        available for assignment to processes. Indicators are listed in
+        position order, which is the order of the scores in a pedigree
+        entry such as "(1;2;4;1;3)". The user picks which
         ones to use; the IDs are then passed to create_process via
         flow_schema or process_schema.
         """
@@ -221,8 +223,12 @@ class LCAFunctions:
                 )
                 indicators = []
                 if full and full.indicators:
-                    for ind in full.indicators:
+                    # Pedigree entries such as "(1;2;4;1;3)" follow the
+                    # indicator positions, so list them in that order
+                    for ind in sorted(full.indicators,
+                                      key=lambda i: i.position or 0):
                         indicators.append({
+                            "position": ind.position,
                             "name": ind.name,
                             "scores": len(ind.scores) if ind.scores else 0,
                         })
@@ -401,8 +407,17 @@ class LCAFunctions:
             }
             if previous:
                 result["previous"] = previous
-                if (previous["value"] != result["value"]
-                        or previous["formula"] != result["formula"]):
+                # openLCA stores a calculated value on formula
+                # parameters, so compare formulas for those and
+                # values only for input parameters
+                norm = lambda f: re.sub(r"\s+", "", f or "")
+                if formula:
+                    changed = (previous["is_input"]
+                               or norm(previous["formula"]) != norm(formula))
+                else:
+                    changed = (not previous["is_input"]
+                               or previous["value"] != float(value))
+                if changed:
                     result["changed"] = True
             return result
         except Exception as ex:
@@ -904,6 +919,102 @@ class LCAFunctions:
             used_names.add(name)
         return name
 
+    def _exchange_unit(self, flow_id: str, unit_name: str) -> tuple:
+        """The flow property and unit for an exchange of this flow in
+        this unit: (property Ref, unit Ref, None) or (None, None, error).
+
+        An exchange must name the flow property its unit belongs to.
+        Left unset, openLCA uses the flow's reference property, and a
+        unit that isn't in it is silently replaced by that property's
+        reference unit (so 0.2 m3 of a mass-referenced flow became
+        0.2 kg). Matching here means the unit is kept or refused.
+        """
+        flow = self.client.get(o.Flow, flow_id)
+        if flow is None:
+            return None, None, f"flow {flow_id} not found"
+        options = []
+        for f in flow.flow_properties or []:
+            if not f.flow_property:
+                continue
+            key = ("fp_units", f.flow_property.id)
+            if key not in self._cache:
+                fp = self.client.get(o.FlowProperty, f.flow_property.id)
+                ug = (self.client.get(o.UnitGroup, fp.unit_group.id)
+                      if fp and fp.unit_group else None)
+                self._cache[key] = (fp.name if fp else f.flow_property.name,
+                                    list(ug.units or []) if ug else [])
+            fp_name, units = self._cache[key]
+            for u in units:
+                if u.name == unit_name or unit_name in (u.synonyms or []):
+                    return (o.Ref(id=f.flow_property.id, name=fp_name,
+                                  ref_type=o.RefType.FlowProperty),
+                            o.Ref(id=u.id, name=u.name, ref_type=o.RefType.Unit),
+                            None)
+            options.append(f"{fp_name}: " + ", ".join(u.name for u in units[:8]))
+        return None, None, (
+            f"unit '{unit_name}' isn't available for flow '{flow.name}'. "
+            f"Its properties allow " + "; ".join(options) +
+            ". Add a property with EDIT FLOW if another unit is needed.")
+
+    @staticmethod
+    def _parse_dq_entry(value) -> tuple:
+        """Normalise pedigree scores to openLCA's dq_entry string.
+
+        Accepts a list/tuple of ints or a string such as "(1;2;1;1;3)"
+        or "1,2,1,1,3". Returns (entry, None) or (None, error).
+        """
+        if isinstance(value, (list, tuple)):
+            parts = list(value)
+        else:
+            parts = str(value).strip().strip("()").replace(",", ";").split(";")
+        scores = []
+        for part in parts:
+            try:
+                n = int(str(part).strip())
+            except ValueError:
+                return None, f"pedigree score '{part}' is not a whole number"
+            if not 1 <= n <= 5:
+                return None, f"pedigree scores run from 1 to 5, got {n}"
+            scores.append(n)
+        if not scores:
+            return None, "no pedigree scores given"
+        return "(" + ";".join(str(n) for n in scores) + ")", None
+
+    def _dq_indicator_names(self, dq_ref) -> List[str]:
+        """Indicator names of a DQ system, in position order."""
+        if dq_ref is None:
+            return []
+        key = ("dq_names", dq_ref.id)
+        if key in self._cache:
+            return self._cache[key]
+        dq = self.client.get(o.DQSystem, dq_ref.id)
+        names = [i.name for i in sorted(dq.indicators or [],
+                                        key=lambda i: i.position or 0)] if dq else []
+        self._cache[key] = names
+        return names
+
+    def _check_dq_entries(self, ex_defs, dq_ref) -> Optional[str]:
+        """Every exchange with pedigree scores needs a flow schema, and
+        the right number of scores for it. Normalises dq_entry in place."""
+        for i, ex_def in enumerate(ex_defs or []):
+            if not ex_def.get("dq_entry"):
+                continue
+            entry, err = self._parse_dq_entry(ex_def["dq_entry"])
+            if err:
+                return f"Exchange {i} ({ex_def.get('flow_name', '')}): {err}"
+            if dq_ref is None:
+                return (f"Exchange {i} ({ex_def.get('flow_name', '')}) has "
+                        f"pedigree scores but the process has no flow "
+                        f"(exchange) data quality system. Set flow_schema.")
+            names = self._dq_indicator_names(dq_ref)
+            n = entry.count(";") + 1
+            if names and n != len(names):
+                return (f"Exchange {i} ({ex_def.get('flow_name', '')}) has "
+                        f"{n} pedigree scores, but '{dq_ref.name}' has "
+                        f"{len(names)} indicators ({', '.join(names)}).")
+            ex_def["dq_entry"] = entry
+        return None
+
     def _resolve_dq_system(self, name_or_id: str):
         """Internal: resolve a DQ system by name or UUID. Returns Ref or None."""
         for desc in self.client.get_descriptors(o.DQSystem):
@@ -1351,14 +1462,13 @@ class LCAFunctions:
             # B05/B06/B11: Pre-validate exchange definitions
             exchange_warnings = []
             for i, ex_def in enumerate(exchanges):
-                # B05: Warn if the unit doesn't resolve
-                unit_name_check = ex_def.get("unit", "kg")
-                unit_check = self._get_unit_ref(unit_name_check)
-                if not unit_check:
-                    exchange_warnings.append(
-                        f"Exchange {i}: unit '{unit_name_check}' not found "
-                        f"in database; exchange will have no unit set."
-                    )
+                # B05: the unit must belong to one of the flow's
+                # properties, or openLCA would silently swap it
+                fp_ref, u_ref, u_err = self._exchange_unit(
+                    ex_def["flow_id"], ex_def.get("unit", "kg"))
+                if u_err:
+                    return {"error": f"Exchange {i}: {u_err}"}
+                ex_def["_flow_property"], ex_def["_unit"] = fp_ref, u_ref
 
                 # B06: Warn on extreme amounts
                 formula_check = ex_def.get("formula")
@@ -1412,11 +1522,10 @@ class LCAFunctions:
                     ref_type=o.RefType.Flow,
                 )
 
-                # Unit
+                # Unit and the flow property it belongs to (checked above)
                 unit_name = ex_def.get("unit", "kg")
-                unit_ref = self._get_unit_ref(unit_name)
-                if unit_ref:
-                    x.unit = unit_ref
+                x.flow_property = ex_def.pop("_flow_property")
+                x.unit = ex_def.pop("_unit")
 
                 # Amount: an explicit formula is respected as-is;
                 # a bare amount is auto-parametrised.
@@ -1489,8 +1598,21 @@ class LCAFunctions:
 
             # Set DQ systems (flow schema / process schema) if provided
             dq_info = {}
+            flow_dq_ref = (self._resolve_dq_system(flow_schema)
+                           if flow_schema else None)
+            if flow_schema and not flow_dq_ref and any(
+                    e.get("dq_entry") for e in exchanges):
+                return {"error": f"Data quality system '{flow_schema}' not "
+                                 f"found, and the exchanges carry pedigree "
+                                 f"scores that need it."}
+            dq_err = self._check_dq_entries(exchanges, flow_dq_ref)
+            if dq_err:
+                return {"error": dq_err}
+            for x, ex_def in zip(exchange_objects, exchanges):
+                if ex_def.get("dq_entry"):
+                    x.dq_entry = ex_def["dq_entry"]
             if flow_schema:
-                dq_ref = self._resolve_dq_system(flow_schema)
+                dq_ref = flow_dq_ref
                 if dq_ref:
                     p.exchange_dq_system = dq_ref
                     dq_info["flow_schema"] = dq_ref.name
@@ -1576,6 +1698,15 @@ class LCAFunctions:
 
         try:
             process = self.client.get(o.Process, process_id)
+            if process is not None:
+                dq_err = self._check_dq_entries(
+                    add_exchanges, getattr(process, "exchange_dq_system", None))
+                if not dq_err and update_exchanges:
+                    dq_err = self._check_dq_entries(
+                        update_exchanges,
+                        getattr(process, "exchange_dq_system", None))
+                if dq_err:
+                    return {"error": dq_err}
             if not process:
                 return {"error": f"Process not found: {process_id}"}
 
@@ -1661,11 +1792,21 @@ class LCAFunctions:
                                 changes.append(
                                     f"exchange '{ex.flow.name}' amount set to {upd['amount']}")
                             if "unit" in upd:
-                                unit_ref = self._get_unit_ref(upd["unit"])
-                                if unit_ref:
-                                    ex.unit = unit_ref
-                                    changes.append(
-                                        f"exchange '{ex.flow.name}' unit set to '{upd['unit']}'")
+                                fp_ref, u_ref, u_err = self._exchange_unit(
+                                    ex.flow.id, upd["unit"])
+                                if u_err:
+                                    return {"error": u_err}   # nothing written yet
+                                ex.flow_property, ex.unit = fp_ref, u_ref
+                                changes.append(
+                                    f"exchange '{ex.flow.name}' unit set to '{upd['unit']}'")
+                            if upd.get("dq_entry"):
+                                ex.dq_entry = upd["dq_entry"]
+                                changes.append(
+                                    f"exchange '{ex.flow.name}' pedigree set to {upd['dq_entry']}")
+                            if upd.get("comment"):
+                                ex.description = upd["comment"]
+                                changes.append(
+                                    f"exchange '{ex.flow.name}' comment updated")
                             if "provider_id" in upd:
                                 ex.default_provider = o.Ref(
                                     id=upd["provider_id"],
@@ -1757,9 +1898,10 @@ class LCAFunctions:
                     )
 
                     unit_name = ex_def.get("unit", "kg")
-                    unit_ref = self._get_unit_ref(unit_name)
-                    if unit_ref:
-                        x.unit = unit_ref
+                    fp_ref, u_ref, u_err = self._exchange_unit(fid, unit_name)
+                    if u_err:
+                        return {"error": f"'{flow_name}': {u_err}"}   # nothing written yet
+                    x.flow_property, x.unit = fp_ref, u_ref
 
                     formula = ex_def.get("formula")
                     if formula:
@@ -1793,6 +1935,12 @@ class LCAFunctions:
                             id=prov_id, ref_type=o.RefType.Process,
                         )
 
+                    comment = ex_def.get("comment") or ex_def.get("description")
+                    if comment:
+                        x.description = comment
+                    if ex_def.get("dq_entry"):
+                        x.dq_entry = ex_def["dq_entry"]
+
                     process.exchanges.append(x)
                     changes.append(f"exchange '{flow_name}' added")
 
@@ -1813,7 +1961,440 @@ class LCAFunctions:
         except Exception as ex:
             return {"error": str(ex)}
 
-    def delete_entity(self, entity_type: str, entity_id: str) -> Dict:
+    def upstream_tree(self, system_ref: str, method_ref: str,
+                      category: str, levels: int = 3, top: int = 5,
+                      allocation: Optional[str] = None,
+                      with_quality: bool = True) -> Dict:
+        """
+        Multi-level contribution tree for one impact category, walked
+        with openLCA's upstream tree (result.get_upstream_impacts_of).
+
+        Each node carries the upstream result of that supply-chain
+        branch, its share of the total, and (with_quality) the pedigree
+        scores on the exchange that links it to its parent, with the
+        indicator names of the parent's flow data quality system.
+        Each level keeps the top N children; the rest are summed into
+        'other'.
+        """
+        system = self._resolve_system(system_ref)
+        if not system:
+            return {"error": f"Product system not found: {system_ref}"}
+        method = self._resolve_method(method_ref)
+        if not method:
+            return {"error": f"Impact method not found: {method_ref}"}
+
+        setup = o.CalculationSetup(
+            target=system, impact_method=method,
+            allocation=self._resolve_allocation(allocation))
+        result = self.client.calculate(setup)
+        result.wait_until_ready()
+        try:
+            totals = result.get_total_impacts()
+            want = category.lower()
+            match = ([t for t in totals if t.impact_category.name.lower() == want]
+                     or [t for t in totals if want in t.impact_category.name.lower()])
+            if not match:
+                return {"error": f"Impact category '{category}' not found",
+                        "available": [t.impact_category.name for t in totals]}
+            if len(match) > 1:
+                return {"error": f"'{category}' matches several categories",
+                        "available": [t.impact_category.name for t in match]}
+            total = match[0]
+            impact_ref = total.impact_category
+            grand = total.amount or 0.0
+
+            proc_cache = {}
+
+            def process(pid):
+                if pid not in proc_cache:
+                    proc_cache[pid] = self.client.get(o.Process, pid)
+                return proc_cache[pid]
+
+            def link_quality(parent_pid, tech_flow):
+                """Pedigree on the parent's exchange for this branch."""
+                parent = process(parent_pid) if parent_pid else None
+                if parent is None:
+                    return None, [], ""
+                names = self._dq_indicator_names(
+                    getattr(parent, "exchange_dq_system", None))
+                prov_id = tech_flow.provider.id if tech_flow.provider else None
+                candidates = [ex for ex in (parent.exchanges or [])
+                              if ex.flow and ex.flow.id == tech_flow.flow.id
+                              and not getattr(ex, "is_quantitative_reference", False)]
+                exact = [ex for ex in candidates if ex.default_provider
+                         and ex.default_provider.id == prov_id]
+                ex = (exact or candidates or [None])[0]
+                if ex is None:
+                    return None, names, ""
+                return (getattr(ex, "dq_entry", None) or None, names,
+                        getattr(ex, "description", "") or "")
+
+            def node_of(n, parent_pid, depth, path):
+                tf = n.tech_flow
+                prov = tf.provider
+                entry, names, comment = (link_quality(parent_pid, tf)
+                                         if with_quality and parent_pid else
+                                         (None, [], ""))
+                node = {
+                    "name": prov.name if prov else tf.flow.name,
+                    "flow": tf.flow.name,
+                    "location": getattr(prov, "location", "") or "",
+                    "amount": n.result,
+                    "direct": n.direct_contribution,
+                    "share": (n.result / grand * 100) if grand else 0.0,
+                    "dq_entry": entry,
+                    "dq_indicators": names,
+                    "comment": comment,
+                    "children": [],
+                }
+                if depth < levels and prov is not None:
+                    kids = result.get_upstream_impacts_of(impact_ref, path + [tf])
+                    kids = sorted(kids, key=lambda k: abs(k.result or 0),
+                                  reverse=True)
+                    shown, rest = kids[:top], kids[top:]
+                    node["children"] = [node_of(k, prov.id, depth + 1,
+                                                path + [tf]) for k in shown]
+                    if rest:
+                        other = sum(k.result or 0 for k in rest)
+                        node["other"] = {
+                            "count": len(rest), "amount": other,
+                            "share": (other / grand * 100) if grand else 0.0}
+                return node
+
+            roots = result.get_upstream_impacts_of(impact_ref, [])
+            if not roots:
+                return {"error": "openLCA returned no upstream tree for this "
+                                 "system and category"}
+
+            # An empty path may return the root node itself or the root's
+            # children, depending on the openLCA version. Compare with
+            # the demand to tell which, and build paths to match.
+            demand_tf = result.get_demand().tech_flow
+
+            def same(a, b):
+                return (a and b and a.flow and b.flow and a.flow.id == b.flow.id
+                        and (a.provider.id if a.provider else None)
+                        == (b.provider.id if b.provider else None))
+
+            if len(roots) == 1 and same(roots[0].tech_flow, demand_tf):
+                root = node_of(roots[0], None, 0, [])
+            else:
+                # Children came back: make the root from the demand
+                prov = demand_tf.provider
+                kids = sorted(roots, key=lambda k: abs(k.result or 0),
+                              reverse=True)
+                shown, rest = kids[:top], kids[top:]
+                root = {
+                    "name": prov.name if prov else demand_tf.flow.name,
+                    "flow": demand_tf.flow.name,
+                    "location": getattr(prov, "location", "") or "",
+                    "amount": grand, "direct": None, "share": 100.0,
+                    "dq_entry": None, "dq_indicators": [], "comment": "",
+                    "children": [node_of(k, prov.id if prov else None, 1, [])
+                                 for k in shown] if levels >= 1 else [],
+                }
+                if rest and levels >= 1:
+                    other = sum(k.result or 0 for k in rest)
+                    root["other"] = {"count": len(rest), "amount": other,
+                                     "share": (other / grand * 100) if grand else 0.0}
+            return {
+                "system": system.name,
+                "method": method.name,
+                "category": impact_ref.name,
+                "unit": getattr(impact_ref, "ref_unit", "") or "",
+                "total": grand,
+                "levels": levels,
+                "top": top,
+                "root": root,
+            }
+        finally:
+            try:
+                result.dispose()
+            except Exception:
+                pass
+
+    def edit_flow(self, flow_id: str, operations: List[Dict]) -> Dict:
+        """
+        Add or update a flow's properties, or change its reference
+        property. Properties are never removed here: openLCA's IPC has
+        no usage query, and removing a property that exchanges use
+        breaks them, so removal is left to openLCA's flow editor.
+
+        operations, applied in order:
+          {"op": "add" | "update", "property": "Mass",
+           "amount": 2400, "unit": "kg", "per_unit": "m3"}
+              meaning 1 m3 = 2400 kg. Either unit may belong to the named
+              property; the other must belong to a property already on
+              the flow. Written either way round, it means the same.
+          {"op": "reference", "property": "Mass"}
+              make Mass the reference; every factor is rescaled so all
+              exchanges keep their meaning.
+
+        Conversion factors follow openLCA: the amount of each property
+        per one reference unit of the reference property (which is 1).
+        """
+        try:
+            flow = self.client.get(o.Flow, flow_id)
+            if flow is None:
+                return {"error": f"Flow not found: {flow_id}"}
+            factors = list(flow.flow_properties or [])
+            changes = []
+            groups = {}
+
+            def prop_ref(name_or_id):
+                descs = self._get_descriptors(o.FlowProperty)
+                hit = [d for d in descs if d.id == name_or_id]
+                if not hit:
+                    hit = [d for d in descs
+                           if (d.name or "").lower() == str(name_or_id).lower()]
+                if not hit:
+                    return None, (f"Flow property '{name_or_id}' not found. "
+                                  f"Available include: " + ", ".join(
+                                      sorted({d.name for d in descs})[:15]))
+                if len(hit) > 1:
+                    return None, f"'{name_or_id}' matches {len(hit)} flow properties"
+                return hit[0], None
+
+            def units_of(prop_id):
+                if prop_id not in groups:
+                    fp = self.client.get(o.FlowProperty, prop_id)
+                    ug = (self.client.get(o.UnitGroup, fp.unit_group.id)
+                          if fp and fp.unit_group else None)
+                    groups[prop_id] = {u.name: (u.conversion_factor or 1.0)
+                                       for u in (ug.units if ug else []) or []}
+                return groups[prop_id]
+
+            def factor_of(prop_id):
+                for f in factors:
+                    if f.flow_property and f.flow_property.id == prop_id:
+                        return f
+                return None
+
+            def label(pid):
+                f = factor_of(pid)
+                return f.flow_property.name if f and f.flow_property else pid
+
+            for i, op in enumerate(operations or []):
+                kind = op.get("op")
+                desc, err = prop_ref(op.get("property", ""))
+                if err:
+                    return {"error": f"Operation {i}: {err}"}
+                existing = factor_of(desc.id)
+
+                if kind == "reference":
+                    if existing is None:
+                        return {"error": f"Operation {i}: '{desc.name}' is not a "
+                                         f"property of '{flow.name}'. Add it first."}
+                    if existing.is_ref_flow_property:
+                        changes.append(f"'{desc.name}' is already the reference")
+                        continue
+                    base = existing.conversion_factor
+                    if not base:
+                        return {"error": f"Operation {i}: '{desc.name}' has a zero "
+                                         f"conversion factor"}
+                    for f in factors:
+                        f.conversion_factor = (f.conversion_factor or 0.0) / base
+                        f.is_ref_flow_property = False
+                    existing.conversion_factor = 1.0
+                    existing.is_ref_flow_property = True
+                    changes.append(f"reference property set to '{desc.name}' "
+                                   f"(all factors rescaled)")
+                    continue
+
+                if kind not in ("add", "update"):
+                    return {"error": f"Operation {i}: unknown op '{kind}'"}
+                try:
+                    amount = float(op["amount"])
+                except (KeyError, TypeError, ValueError):
+                    return {"error": f"Operation {i}: amount must be a number"}
+                if amount <= 0:
+                    return {"error": f"Operation {i}: amount must be positive"}
+                u1, u2 = op.get("unit", ""), op.get("per_unit", "")
+
+                # Relation: 1 u2 (property X) = amount u1 (property Y).
+                # One of X, Y is the named property A; the other is B,
+                # a property already on the flow.
+                a_units = units_of(desc.id)
+                others = [f for f in factors if f.flow_property
+                          and f.flow_property.id != desc.id]
+
+                def owner(unit):
+                    return [f for f in others if unit in units_of(f.flow_property.id)]
+
+                if u1 in a_units and owner(u2):
+                    a_is_y, b = True, owner(u2)[0]
+                elif u2 in a_units and owner(u1):
+                    a_is_y, b = False, owner(u1)[0]
+                else:
+                    have = ", ".join(sorted(label(f.flow_property.id) for f in others)) or "none"
+                    return {"error": (
+                        f"Operation {i}: one of '{u1}' and '{u2}' must be a unit "
+                        f"of '{desc.name}' and the other a unit of a property "
+                        f"already on '{flow.name}' (others on it: {have}).")}
+                b_units = units_of(b.flow_property.id)
+                cf1 = (a_units if a_is_y else b_units)[u1]
+                cf2 = (b_units if a_is_y else a_units)[u2]
+                ratio = amount * cf1 / cf2          # f_Y / f_X
+                f_b = b.conversion_factor or 0.0
+
+                if kind == "add":
+                    new_f = ratio * f_b if a_is_y else f_b / ratio
+                    if existing is not None:
+                        same = (existing.conversion_factor and abs(
+                            existing.conversion_factor - new_f)
+                            <= 1e-9 * max(abs(new_f), 1e-300))
+                        if same or existing.is_ref_flow_property and abs(
+                                (ratio * f_b if a_is_y else f_b / ratio) - 1.0) < 1e-9:
+                            changes.append(f"'{desc.name}' already present with "
+                                           f"this conversion, unchanged")
+                            continue
+                        return {"error": (
+                            f"Operation {i}: '{desc.name}' is already a property "
+                            f"of '{flow.name}' with a different conversion. Use "
+                            f"UPDATE PROPERTY to change it.")}
+                    factors.append(o.FlowPropertyFactor(
+                        flow_property=o.Ref(id=desc.id, name=desc.name,
+                                            ref_type=o.RefType.FlowProperty),
+                        conversion_factor=new_f, is_ref_flow_property=False))
+                    changes.append(f"'{desc.name}' added: 1 {u2} = {amount:g} {u1} "
+                                   f"(factor {new_f:.6g})")
+                else:
+                    if existing is None:
+                        return {"error": f"Operation {i}: '{desc.name}' is not a "
+                                         f"property of '{flow.name}'. Use ADD."}
+                    if existing.is_ref_flow_property:
+                        # The reference stays at 1, so move the other one
+                        if b.is_ref_flow_property:
+                            return {"error": f"Operation {i}: both units belong "
+                                             f"to the reference property"}
+                        b.conversion_factor = 1.0 / ratio if a_is_y else ratio
+                        changes.append(f"'{label(b.flow_property.id)}' factor set to "
+                                       f"{b.conversion_factor:.6g} (1 {u2} = {amount:g} {u1})")
+                    else:
+                        existing.conversion_factor = ratio * f_b if a_is_y else f_b / ratio
+                        changes.append(f"'{desc.name}' factor set to "
+                                       f"{existing.conversion_factor:.6g} "
+                                       f"(1 {u2} = {amount:g} {u1})")
+
+            flow.flow_properties = factors
+            self.client.put(flow)
+            self._cache.pop("Flow", None)
+            return {"flow_id": flow_id, "flow_name": flow.name,
+                    "category": getattr(flow, "category", "") or "",
+                    "changes": changes,
+                    "properties": [{"name": f.flow_property.name,
+                                    "factor": f.conversion_factor,
+                                    "reference": bool(f.is_ref_flow_property)}
+                                   for f in factors if f.flow_property]}
+        except Exception as ex:
+            return {"error": str(ex)}
+
+    def find_flow_usage(self, flow_id: str, max_hits: int = 10,
+                        progress=None, prefer_categories=None,
+                        workers: int = 8) -> Dict:
+        """
+        Find where a flow is used: by processes that produce it, in
+        process exchanges, and (for elementary flows) in impact category
+        characterisation factors.
+
+        openLCA's IPC server has no 'where used' query (the desktop
+        Usage view runs inside openLCA), so this reads processes. To keep
+        it quick it (1) asks openLCA for the flow's providers first,
+        (2) reads processes in prefer_categories (e.g. the user's own
+        folders) before the rest, (3) reads several processes at once,
+        and (4) stops as soon as max_hits uses are found. progress, if
+        given, is called with (checked, total) as it goes.
+        """
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        try:
+            flow = self.client.get(o.Flow, flow_id)
+            if flow is None:
+                return {"error": f"Flow not found: {flow_id}"}
+            used_by = []
+
+            # 1. Any process producing the flow is a use, and openLCA
+            #    can answer that directly
+            try:
+                for tf in self.client.get_providers(
+                        o.Ref(id=flow_id, ref_type=o.RefType.Flow)) or []:
+                    if tf.provider and tf.provider.name not in used_by:
+                        used_by.append(tf.provider.name)
+            except Exception:
+                pass
+
+            def result(methods, checked, total):
+                return {
+                    "flow_id": flow_id, "flow_name": flow.name,
+                    "used_by_processes": used_by[:max_hits],
+                    "used_in_impact_categories": methods,
+                    "in_use": bool(used_by or methods),
+                    "complete": len(used_by) + len(methods) < max_hits,
+                    "processes_checked": checked, "processes_total": total,
+                }
+
+            descs = list(self.client.get_descriptors(o.Process))
+            if len(used_by) >= max_hits:
+                return result([], 0, len(descs))
+
+            # 2. The user's own folders first
+            prefer = [c.lower().rstrip("/") for c in (prefer_categories or []) if c]
+
+            def preferred(d):
+                cat = (getattr(d, "category", "") or "").lower()
+                return any(cat == c or cat.startswith(c + "/") for c in prefer)
+            descs.sort(key=lambda d: 0 if preferred(d) else 1)
+
+            # 3. Several reads at once, one client per worker thread
+            #    (the IPC client isn't thread-safe; the server is)
+            url = getattr(self.client, "url", None)
+            local = threading.local()
+
+            def worker_client():
+                if url is None:
+                    return self.client
+                if not hasattr(local, "c"):
+                    local.c = Client(url)
+                return local.c
+
+            def uses(d):
+                proc = worker_client().get(o.Process, d.id)
+                return proc is not None and any(
+                    ex.flow and ex.flow.id == flow_id
+                    for ex in (proc.exchanges or []))
+
+            checked = 0
+            batch = max(workers * 25, 50)
+            n_workers = workers if url is not None else 1
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                for i in range(0, len(descs), batch):
+                    chunk = descs[i:i + batch]
+                    for d, hit in zip(chunk, pool.map(uses, chunk)):
+                        if hit and d.name not in used_by:
+                            used_by.append(d.name)
+                    checked += len(chunk)
+                    if progress:
+                        progress(checked, len(descs))
+                    # 4. Stop once enough uses are found
+                    if len(used_by) >= max_hits:
+                        return result([], checked, len(descs))
+
+            methods = []
+            if flow.flow_type == o.FlowType.ELEMENTARY_FLOW:
+                for d in self.client.get_descriptors(o.ImpactCategory):
+                    cat = self.client.get(o.ImpactCategory, d.id)
+                    if cat and any(f.flow and f.flow.id == flow_id
+                                   for f in (cat.impact_factors or [])):
+                        methods.append(d.name)
+                        if len(used_by) + len(methods) >= max_hits:
+                            break
+            return result(methods, checked, len(descs))
+        except Exception as ex:
+            return {"error": str(ex)}
+
+    def delete_entity(self, entity_type: str, entity_id: str,
+                      usage_checked: bool = False,
+                      prefer_categories=None) -> Dict:
         """
         Delete a process, flow, or product system from the database.
 
@@ -1839,6 +2420,28 @@ class LCAFunctions:
                 return {"error": f"{entity_type} not found: {entity_id}"}
 
             name = getattr(entity, "name", entity_id)
+
+            # openLCA deletes a flow even while exchanges or
+            # characterisation factors still point at it, which leaves
+            # those processes and methods broken. Refuse instead.
+            if entity_type == "flow" and not usage_checked:
+                # One use is enough to refuse, so stop at the first
+                usage = self.find_flow_usage(
+                    entity_id, max_hits=1,
+                    prefer_categories=prefer_categories)
+                if "error" in usage:
+                    return usage
+                if usage["in_use"]:
+                    where = usage["used_by_processes"] + [
+                        f"{c} (impact category)"
+                        for c in usage["used_in_impact_categories"]]
+                    more = "" if usage["complete"] else " (and possibly others)"
+                    return {"error": (
+                        f"Flow '{name}' is still used by "
+                        f"{', '.join(where)}{more}. Remove it from those "
+                        f"first; deleting it now would leave them broken."),
+                        "in_use": True}
+
             self.client.delete(entity)
 
             # Clear relevant cache
@@ -2559,9 +3162,22 @@ class LCAFunctions:
                         )
 
                 if target_unit:
-                    unit_ref = self._get_unit_ref(target_unit)
-                    if unit_ref:
-                        system.target_unit = unit_ref
+                    # The unit must belong to a property of the reference
+                    # flow, or openLCA would swap it for another unit
+                    full = self.client.get(o.Process, process.id)
+                    qref = next((ex for ex in ((full.exchanges if full else None) or [])
+                                 if getattr(ex, "is_quantitative_reference", False)
+                                 and ex.flow), None)
+                    if qref is None:
+                        return {"error": "the process has no reference flow "
+                                         "to apply target_unit to"}
+                    fp_ref, u_ref, u_err = self._exchange_unit(
+                        qref.flow.id, target_unit)
+                    if u_err:
+                        return {"error": f"target_unit: {u_err}"}
+                    system.target_unit = u_ref
+                    if not target_flow_property:
+                        system.target_flow_property = fp_ref
 
                 self.client.put(system)
 

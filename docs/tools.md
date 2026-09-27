@@ -1,6 +1,6 @@
 # Tool Reference
 
-Complete reference for all 32 tools in the openLCA MCP Server. Each entry shows the tool name, what it does, required and optional inputs, and an example prompt that would trigger it.
+Complete reference for all 35 tools in the openLCA MCP Server. Each entry shows the tool name, what it does, required and optional inputs, and an example prompt that would trigger it.
 
 ## Explore
 
@@ -147,6 +147,18 @@ Create or update a global (database-level) parameter. Give a value for an input 
 Give exactly one of `value` or `formula`.
 
 **Example:** 'Make cement_mass a global parameter of 300, and water_mass a formula of cement_mass times 0.45'
+
+---
+
+### `edit_flow`
+
+Adds or updates a flow's properties, or changes its reference property. A property is given as a relation between two units: `amount` 2400, `unit` kg, `per_unit` m3 means 1 m3 = 2400 kg. One unit must belong to the named property and the other to a property already on the flow; written either way round, it means the same. openLCA stores each factor as the amount of that property per one reference unit of the reference property, and `edit_flow` works that out. Changing the reference rescales every factor, so exchanges keep their meaning.
+
+Properties are never removed by this tool. Removing one that exchanges use breaks them, and IPC can't tell where a flow is used, so removal is left to openLCA's flow editor.
+
+**Inputs:** `flow_id`; `operations`, applied in order: `{"op": "add" | "update", "property", "amount", "unit", "per_unit"}` or `{"op": "reference", "property"}`.
+
+**Example:** 'Add a mass of 2400 kg per m3 to the Concrete flow and make mass its reference'
 
 ---
 
@@ -316,6 +328,24 @@ Run a baseline impact assessment calculation. Always asks the user which impact 
 - `method` (required): impact assessment method name or ID
 
 **Example:** 'Run an LCA on my product system'
+
+---
+
+### `upstream_tree`
+
+Multi-level contribution tree for one impact category, following the supply chain downwards with openLCA's upstream tree. Each branch shows its upstream result and share of the total, and the pedigree scores on the exchange that links it to its parent, with the indicator names of that process's flow data quality system. Each level keeps the top branches and groups the rest as 'other'.
+
+**Inputs:** `system`, `method`, `category` (required); `levels` (default 3), `top` (default 5), `with_quality` (default true), `allocation`.
+
+**Example:** 'Show me a three-level tree for AR6-100 on the wall system, with data quality'
+
+---
+
+### `find_flow_usage`
+
+Finds which processes produce or use a flow and, for elementary flows, which impact categories have characterisation factors for it. openLCA's IPC server has no 'where used' query, so this checks the flow's providers first and then reads processes, eight at a time, stopping once `max_hits` uses are found. Proving a flow unused means reading every process, which takes a while on large databases. `delete_entity` runs the same check before deleting a flow, and refuses if the flow is in use, because openLCA would otherwise delete it and leave those processes broken.
+
+**Inputs:** `flow_id` (required); `max_hits` (default 10).
 
 ---
 

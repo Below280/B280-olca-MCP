@@ -118,6 +118,7 @@ EXPLORE the database:
 
 BUILD a model:
   create_global_parameter → database-level parameter (value or formula)
+  edit_flow             → add or update flow properties, set the reference
   create_flow           → make a product/waste/elementary flow
   create_bridge         → make a bridge flow + process (foreground-to-background link)
   create_process        → build a process with exchanges and parameters
@@ -999,6 +1000,47 @@ class OpenLCAMCPServer:
                     annotations=WRITE,
                 ),
                 Tool(
+                    name="edit_flow",
+                    description=(
+                        "Add or update a flow's properties, or change its "
+                        "reference property. A property is given as a "
+                        "relation, e.g. amount 2400, unit 'kg', per_unit "
+                        "'m3' means 1 m3 = 2400 kg; either unit may belong "
+                        "to the named property and the other must belong to "
+                        "a property already on the flow. Changing the "
+                        "reference rescales every factor so exchanges keep "
+                        "their meaning. Properties are never removed here: "
+                        "removal is left to openLCA's flow editor, which can "
+                        "check where they are used. Changing a background "
+                        "flow affects every model that uses it."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "flow_id": {"type": "string", "description": "Flow UUID"},
+                            "operations": {
+                                "type": "array",
+                                "description": "Applied in order",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": {"type": "string",
+                                               "enum": ["add", "update", "reference"]},
+                                        "property": {"type": "string",
+                                                     "description": "Flow property name or ID, e.g. 'Mass'"},
+                                        "amount": {"type": "number"},
+                                        "unit": {"type": "string"},
+                                        "per_unit": {"type": "string"},
+                                    },
+                                    "required": ["op", "property"],
+                                },
+                            },
+                        },
+                        "required": ["flow_id", "operations"],
+                    },
+                    annotations=WRITE,
+                ),
+                Tool(
                     name="find_unit",
                     description=(
                         "Look up a unit by name (e.g. 'kg', 'kWh', 'm3') "
@@ -1174,6 +1216,14 @@ class OpenLCAMCPServer:
                                             "type": "string",
                                             "description": "UUID of provider process (optional)",
                                         },
+                                        "dq_entry": {
+                                            "type": "string",
+                                            "description": "Pedigree scores, e.g. '(1;2;1;1;3)'. Needs flow_schema; one score (1-5) per indicator.",
+                                        },
+                                        "comment": {
+                                            "type": "string",
+                                            "description": "Comment on this exchange (optional)",
+                                        },
                                     },
                                     "required": ["flow_id", "unit", "is_input"],
                                 },
@@ -1253,6 +1303,8 @@ class OpenLCAMCPServer:
                                         "is_input": {"type": "boolean"},
                                         "is_qref": {"type": "boolean", "default": False},
                                         "provider_id": {"type": "string"},
+                                        "dq_entry": {"type": "string"},
+                                        "comment": {"type": "string"},
                                     },
                                     "required": ["flow_id", "unit", "is_input"],
                                 },
@@ -1570,6 +1622,59 @@ class OpenLCAMCPServer:
                     },
 
                     annotations=CALCULATE,
+                ),
+                Tool(
+                    name="upstream_tree",
+                    description=(
+                        "Multi-level contribution tree for ONE impact category, "
+                        "following the supply chain downwards. Each branch has "
+                        "its upstream result, its share of the total, and the "
+                        "pedigree (data quality) scores on the exchange linking "
+                        "it to its parent, with indicator names. Use it to find "
+                        "where an impact comes from and whether the data along "
+                        "that path is weak (scores of 4 or 5). "
+                        "BEFORE calling: confirm the method and category."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "system": {"type": "string",
+                                       "description": "Product system name or ID"},
+                            "method": {"type": "string",
+                                       "description": "Impact method name or ID"},
+                            "category": {"type": "string",
+                                         "description": "Impact category name (exact, or a unique part of it)"},
+                            "levels": {"type": "integer", "default": 3,
+                                       "description": "How many levels down to go (default 3)"},
+                            "top": {"type": "integer", "default": 5,
+                                    "description": "Children kept per branch; the rest are grouped as 'other' (default 5)"},
+                            "with_quality": {"type": "boolean", "default": True,
+                                             "description": "Include pedigree scores on each branch"},
+                            "allocation": ALLOCATION_PROPERTY,
+                        },
+                        "required": ["system", "method", "category"],
+                    },
+                    annotations=CALCULATE,
+                ),
+                Tool(
+                    name="find_flow_usage",
+                    description=(
+                        "Find which processes (and, for elementary flows, which "
+                        "impact categories) use a flow. openLCA's IPC has no "
+                        "'where used' query, so this reads every process and "
+                        "can take a while on large databases. delete_entity "
+                        "runs this check itself before deleting a flow."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "flow_id": {"type": "string", "description": "Flow UUID"},
+                            "max_hits": {"type": "integer", "default": 10,
+                                         "description": "Stop after this many uses"},
+                        },
+                        "required": ["flow_id"],
+                    },
+                    annotations=READONLY,
                 ),
                 Tool(
                     name="monte_carlo",
@@ -2079,6 +2184,9 @@ class OpenLCAMCPServer:
         elif name == "find_unit":
             return self.lca.find_unit(args["unit_name"])
 
+        elif name == "edit_flow":
+            return self.lca.edit_flow(args["flow_id"], args["operations"])
+
         elif name == "create_global_parameter":
             return self.lca.create_global_parameter(
                 args["name"],
@@ -2162,6 +2270,17 @@ class OpenLCAMCPServer:
             return self.lca.calculate_impacts(
                 args["system"], args["method"],
                 allocation=args.get("allocation"))
+
+        elif name == "upstream_tree":
+            return self.lca.upstream_tree(
+                args["system"], args["method"], args["category"],
+                args.get("levels", 3), args.get("top", 5),
+                allocation=args.get("allocation"),
+                with_quality=args.get("with_quality", True))
+
+        elif name == "find_flow_usage":
+            return self.lca.find_flow_usage(
+                args["flow_id"], args.get("max_hits", 10))
 
         elif name == "contribution_analysis":
             return self.lca.contribution_analysis(
@@ -2275,6 +2394,7 @@ class OpenLCAMCPServer:
                 "description": "Create processes, flows, bridges, and product systems. Changes are saved to the database.",
                 "tools": [
                     "create_global_parameter: make or update a database-level parameter (value or formula)",
+                    "edit_flow: add or update a flow's properties, or change its reference property",
                     "create_flow: make a product, waste, or elementary flow",
                     "create_bridge: make a bridge flow and process linking to a background database",
                     "create_process: build a process with exchanges and parameters",

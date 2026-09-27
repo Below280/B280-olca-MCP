@@ -2,7 +2,7 @@
 
 An MCP (Model Context Protocol) server that connects AI assistants to a running openLCA instance. Developed and tested with Claude Desktop; compatible with any MCP client that supports stdio transport. Built by [Below280](https://below280.com), the UK partner for openLCA.
 
-The server exposes 32 tools covering the full LCA workflow: exploring databases, building and editing models, running calculations (scenarios, sensitivity, Monte Carlo, contribution analysis), auditing and validating models, and extracting data quality assessments. All calculation patterns are tested against production ecoinvent databases.
+The server exposes 35 tools covering the full LCA workflow: exploring databases, building and editing models, running calculations (scenarios, sensitivity, Monte Carlo, contribution analysis), auditing and validating models, and extracting data quality assessments. All calculation patterns are tested against production ecoinvent databases.
 
 The server works with both ecoinvent-family databases (ecoinvent, EN15804GD, HiQLCD, BAFU) and FLCAC-family databases (LCA Commons, US LCI, USEEIO). It asks which family you are using, or auto-detects from the flow property names.
 
@@ -170,19 +170,20 @@ The MCP server runs locally and communicates with openLCA on localhost. The AI c
 | `find_unit` | Look up units and their flow properties |
 | `chemical_synonyms` | PubChem synonym search to find database matches |
 
-### Build (7 tools)
+### Build (8 tools)
 
 | Tool | Purpose |
 |---|---|
 | `create_global_parameter` | Create or update a database-level parameter, as a value or a formula |
 | `create_flow` | Create product, waste, or elementary flows |
+| `edit_flow` | Add or update flow properties, or change the reference property |
 | `create_bridge` | Create a bridge flow + process in one call |
 | `create_process` | Build a process with exchanges, parameters, and providers |
 | `edit_process` | Edit an existing process: add/update/remove exchanges and parameters |
 | `create_system` | Create a product system from a process |
-| `delete_entity` | Delete a process, flow, or product system (requires user confirmation) |
+| `delete_entity` | Delete a process, flow, or product system (requires user confirmation; refuses to delete a flow that is still in use) |
 
-### Audit (5 tools)
+### Audit (6 tools)
 
 | Tool | Purpose |
 |---|---|
@@ -191,13 +192,15 @@ The MCP server runs locally and communicates with openLCA on localhost. The AI c
 | `validate_system` | Mirrors openLCA's Validate button: linking, parameters, test calculation |
 | `get_system_links` | Show which providers are linked for each exchange |
 | `data_quality` | Extract pedigree matrices and uncertainty from a process |
+| `find_flow_usage` | Find the processes and impact categories that use a flow |
 
-### Calculate (8 tools)
+### Calculate (9 tools)
 
 | Tool | Purpose |
 |---|---|
 | `calculate` | Baseline impact assessment |
 | `contribution_analysis` | Process-level contribution breakdown per impact category |
+| `upstream_tree` | Multi-level contribution tree for one category, with pedigree scores on every branch |
 | `monte_carlo` | Uncertainty simulation with statistics |
 | `inventory_flows` | Raw elementary flow results (LCI level) |
 | `scenarios` | Scenario calculations from conversational parameter values |
