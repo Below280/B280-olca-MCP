@@ -8,6 +8,12 @@ This page is for two groups: people whose prompts, clients or scripts call the 3
 
 Nothing to change. Upgrade, restart the MCP client, and ask as before. The assistant now writes olcaBASIC and the server runs it. A few answers will differ, because rules that were advice are now enforced: see "Behaviour changes" in the [release notes](releases/release-notes-v2.0.0.md).
 
+Three things you may notice:
+
+- **Bridges.** A process of yours no longer uses a background dataset directly. The assistant writes a bridge for each one (`BRIDGE | Cement | kg`), and your processes use the bridge. Models built before 2.0 keep working as they are; new inputs go through bridges.
+- **Rebuilding after a change.** After a process is edited, the product systems that hold it have to be built again and validated before anything is calculated. The assistant will do it, and it takes as long as building the system did the first time.
+- **Refusals.** When the assistant reports that olcaBASIC refused something, there is no setting that turns the refusal off. The hint says what the model needs.
+
 ```
 pip install --upgrade b280-olca-mcp
 ```

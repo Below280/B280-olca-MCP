@@ -2,7 +2,7 @@
 
 From version 2.0 the server has three tools: `olcabasic_run`, `olcabasic_help` and `olcabasic_reset` (see the [README](../README.md#tools)). The command reference for what `olcabasic_run` accepts is olcaBASIC's own: `olcabasic_help`, or the [olcaBASIC README](https://github.com/Below280/olcaBASIC#full-command-reference).
 
-This page is the reference for the 36 typed tools of version 1. They are still in the package and are switched on with `OLCA_MCP_LEGACY_TOOLS=1`. Each entry shows the tool name, what it does, required and optional inputs, and an example prompt that would trigger it. [MIGRATION.md](MIGRATION.md) gives the olcaBASIC command for each.
+This page is the reference for the 36 typed tools of version 1. They are still in the package and are switched on with `OLCA_MCP_LEGACY_TOOLS=1`. They call the engine directly, so they skip every rule olcaBASIC enforces: no bridge rule, no exact names, no validation gate, no check for product systems that are out of date, no EPD or programme rules. Each tool's description says so to the assistant. Each entry shows the tool name, what it does, required and optional inputs, and an example prompt that would trigger it. [MIGRATION.md](MIGRATION.md) gives the olcaBASIC command for each.
 
 ## Explore
 

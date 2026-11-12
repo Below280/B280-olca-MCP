@@ -45,6 +45,8 @@ Someone using this MCP can say things like:
 - 'Run 1000 Monte Carlo iterations and show me the uncertainty'
 - 'Help me connect to openLCA from R / Go / Rust'
 - 'Build an EPD for this product under the International EPD System rules'
+- 'Which emissions drive the climate change result, and where do they come from?'
+- 'Put uncertainty on the electricity and the steel, then run Monte Carlo'
 - 'What can you do?'
 
 The AI assistant handles the conversation, writes the olcaBASIC program, and presents results visually with charts, tables, and exportable data. The program is the record of the work: `SAVE PROGRAM "model.baslca"` writes out everything that ran, and `RUN "model.baslca"` repeats it without an assistant.
@@ -161,7 +163,7 @@ Three tools, always present:
 
 | Tool | Purpose |
 |---|---|
-| `olcabasic_run` | Run an olcaBASIC program. Arguments: `code`, and `dry_run` to check a program without touching openLCA. Returns `ok`, `text` (what a terminal would show), `data` (results as structures), `errors` (line, message, hint) and `warnings` |
+| `olcabasic_run` | Run an olcaBASIC program. Arguments: `code`, and `dry_run` to check a program without touching openLCA. Returns `ok`, `text` (what a terminal would show), `data` (the result of every command as a structure, each `RESULT` query included, in the shape `olcabasic.Session` gives Python), `errors` (line, message, hint) and `warnings` |
 | `olcabasic_help` | The command reference, from the same registry as olcaBASIC's `HELP`: no argument for the overview, a topic (`build`, `calculate`, `epd` ...) or a command (`MAKE PROCESS`) |
 | `olcabasic_reset` | Clear the session: variables, scenarios, folders, the active EPD. The database is not touched |
 
@@ -169,14 +171,29 @@ One session lasts as long as the server, so variables, the current folder, scena
 
 The server starts whether or not openLCA is running. The first call that needs openLCA connects, and says what to do if it cannot.
 
+### What it will not do
+
+The language refuses anything that would build or calculate a wrong model, and an assistant cannot talk it out of a refusal. Each of these comes back as an error with the line and what to type instead:
+
+- a background process used without a bridge;
+- a name that could mean several processes or flows, and a method name that is not the full name;
+- a `MAKE PROCESS` block run again after it was changed;
+- a calculation on a product system that is out of date (one of its processes was edited, linked, moved or parameterised) or that failed `VALIDATE`;
+- an output that would create a flow by accident, a new emission that the method has no factor for, Monte Carlo with nothing uncertain, allocation without factors;
+- in an EPD: a module using another module's process, and any broken rule of the programme.
+
+Three kinds of command ask a person a question, and only run in the olcaBASIC terminal: `PARAMETERISE ... ALL`, changing an impact method olcaBASIC did not make, and `SHUTDOWN SERVER`. Through the MCP they are refused with a hint that says so.
+
+`tests/test_shortcuts.py` plays an assistant cutting corners: 25 programs, each trying one way round a rule, each refused with the database unchanged.
+
 ### Two flags
 
 Both are off by default and are set as environment variables in the MCP client's configuration.
 
 | Variable | Effect |
 |---|---|
-| `OLCA_MCP_ALLOW_PYTHON=1` | Adds `python_exec`: run Python with `session`, `engine` and `client` in scope, for the cases olcaBASIC cannot express. It runs in the server process, under the same lock, with your user's rights. Each call needs a `why_not_basic` reason and is logged to `~/.olcabasic/python_log.jsonl` (`OLCA_MCP_PYTHON_LOG` moves the log; `OLCA_MCP_PYTHON_TIMEOUT` sets the time limit in seconds). Leave it off unless you want an assistant to be able to run code on your machine |
-| `OLCA_MCP_LEGACY_TOOLS=1` | Adds the 36 typed tools of version 1 (`search_processes`, `create_process`, `calculate` and so on), unchanged, for clients and prompts written against them. They are listed in [docs/tools.md](docs/tools.md) |
+| `OLCA_MCP_ALLOW_PYTHON=1` | Adds `python_exec`: run Python with `session`, `engine` and `client` in scope, for the cases olcaBASIC cannot express. **It skips every rule the language enforces**, and its description tells the assistant so. It runs in the server process, under the same lock, with your user's rights. Each call needs a `why_not_basic` reason and is logged to `~/.olcabasic/python_log.jsonl` (`OLCA_MCP_PYTHON_LOG` moves the log; `OLCA_MCP_PYTHON_TIMEOUT` sets the time limit in seconds). Leave it off unless you want an assistant to be able to run code on your machine |
+| `OLCA_MCP_LEGACY_TOOLS=1` | Adds the 36 typed tools of version 1 (`search_processes`, `create_process`, `calculate` and so on), for clients and prompts written against them. They call the engine directly, so **they skip every rule the language enforces**; each tool's description starts by saying so. They are listed in [docs/tools.md](docs/tools.md) |
 
 ```json
 {
@@ -208,15 +225,15 @@ The server exposes four MCP resources that AI clients can read on demand:
 | Resource | URI | Purpose |
 |---|---|---|
 | Database info | `lca://database/info` | Live database overview |
-| Assistant instructions | `lca://knowledge/instructions` | Operational rules, workflows, and conventions |
-| IPC protocol reference | `lca://knowledge/ipc-protocol` | Complete JSON-RPC spec for all 60 IPC methods |
+| Assistant instructions | `lca://knowledge/instructions` | How to work with the user: when to ask, how to present results, how to check a model (144 lines; the rules are in the language) |
+| IPC protocol reference | `lca://knowledge/ipc-protocol` | JSON-RPC reference for the 60 IPC methods of the olca-ipc client |
 | openLCA resources | `lca://knowledge/openlca-resources` | Links to databases, docs, forums, and training |
 
 The IPC protocol reference enables AI clients to help users connect to openLCA from any programming language by generating client code from the protocol specification.
 
 ## EPD model building
 
-EPDs to EN 15804+A2 are olcaBASIC commands: an `EPD` block (declared unit, method, modules, programme), a `MODULE` block per information module, then `EPD SYSTEMS`, `EPD CHECK`, `EPD CALCULATE`, `EPD DATA QUALITY` and `EPD REPORT`. The module rules of the standard and, with `PROGRAMME "IES"`, the rules of the International EPD System are errors, not advice. What the assistant still does with you is decide which item of your inventory belongs in which module. Ask 'build an EPD from this LCI' to start. `olcabasic_help` with the topic `epd` shows the commands.
+EPDs to EN 15804+A2 are olcaBASIC commands: an `EPD` block (declared unit, method, modules, programme), a `MODULE` block per information module, then `EPD SYSTEMS`, `EPD CHECK`, `EPD CALCULATE`, `EPD DATA QUALITY`, `EPD REPORT` and `EPD SAVE` (which writes the EPD into openLCA as its own EPD entity). `RATING` lines record how well each dataset represents geography, technology and time; `EPD SENSITIVITY` varies groups of parameters; `EPD EXPORT MODEL` writes the model out for a verifier. The module rules of the standard and, with `PROGRAMME "IES"`, the rules of the International EPD System are errors, not advice. What the assistant still does with you is decide which item of your inventory belongs in which module. Ask 'build an EPD from this LCI' to start. `olcabasic_help` with the topic `epd` shows the commands.
 
 ## Standalone scripts
 
