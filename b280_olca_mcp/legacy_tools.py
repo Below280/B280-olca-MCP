@@ -90,8 +90,12 @@ def validate_file_path(path: str, must_exist: bool = False) -> str:
 LEGACY_TOOL_REFERENCE = """
 LEGACY TOOLS (OLCA_MCP_LEGACY_TOOLS=1)
 --------------------------------------
-The typed tools of v1 are also registered. Prefer olcabasic_run; use
-these where an existing workflow depends on them.
+The typed tools of v1 are also registered. They call the engine
+directly and skip every rule olcaBASIC enforces: no bridge rule, no
+exact-name rule, no validation gate, no stale-system check, no EPD or
+programme rules. A model built with them can be wrong without an
+error. Prefer olcabasic_run; use these only where an existing workflow
+depends on them, and say so to the user.
 
 QUICK TOOL REFERENCE
 --------------------
@@ -132,8 +136,23 @@ CALCULATE:
 """
 
 
+# Said at the start of every v1 tool's description.
+LEGACY_WARNING = (
+    "[v1 tool: it skips every rule olcaBASIC enforces (bridges, exact "
+    "names, validation, stale systems, EPD and programme rules). Prefer "
+    "olcabasic_run.] ")
+
+
 def tool_definitions() -> list:
-    """The v1 tool definitions, unchanged."""
+    """The v1 tool definitions. Each description starts by saying that
+    the tool skips the rules of the language."""
+    tools = _tool_definitions()
+    for tool in tools:
+        tool.description = LEGACY_WARNING + (tool.description or "")
+    return tools
+
+
+def _tool_definitions() -> list:
     return [
         Tool(
             name="database_info",

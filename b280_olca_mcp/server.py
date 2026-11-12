@@ -38,23 +38,26 @@ logger = logging.getLogger("openLCA-MCP")
 # Results larger than this are returned without the structured data
 # (the text output still carries the tables).
 MAX_REPLY_CHARS = 60_000
+# Tables in a reply that is too long are cut to this many rows first.
+MAX_ROWS = 50
 
 RUN_DESCRIPTION = """\
 Run olcaBASIC code against openLCA, in a session that keeps its state between calls.
 1. One statement per line; names in "double quotes"; blocks end with END <word>.
-2. Explore with FIND, SHOW and CAT; build with MAKE PROCESS, BRIDGE and SYSTEM; analyse with CALCULATE "system" USING "method", CONTRIBUTION, SENSITIVITY.
-3. Every calculation needs the full method name. A name that matches several processes is an error: add LOCATION "code" or PROVIDER "uuid".
-4. A program stops at its first error. Each error gives the line and a hint that says what to type. dry_run=true checks a program without touching openLCA.
-5. DELETE needs CONFIRM DELETE ON. Use a FOR loop in one program for batch work.
+2. Explore with FIND, SHOW and CAT; build with BRIDGE, MAKE PROCESS and SYSTEM; analyse with CALCULATE "system" USING "method", then RESULT ... on the result it leaves open, CONTRIBUTION, SENSITIVITY.
+3. The language refuses anything that would build or calculate a wrong model: a background process used without a bridge, an ambiguous or partial name, a changed block run again, a product system that is out of date or failed VALIDATE, a programme rule broken in an EPD. There is no override. Each error gives the line and a hint that says what to type: do that.
+4. A program stops at its first error. dry_run=true checks a program without touching openLCA. Use a FOR loop in one program for batch work.
+5. The reply is JSON: ok, text, data (the structured result of each command, RESULT queries included), errors, warnings. DELETE needs CONFIRM DELETE ON. Commands that ask a person (PARAMETERISE ... ALL, changing a method olcaBASIC did not make, SHUTDOWN SERVER) only run in the olcaBASIC terminal.
 Call olcabasic_help first for the command list; olcabasic_help with a topic or a command name gives syntax and examples."""
 
 HELP_DESCRIPTION = (
-    "The olcaBASIC command reference. Without a topic: the rules of the "
-    "language and one line per command (short; read it before the first "
-    "olcabasic_run). With a topic (navigation, explore, build, edit, "
-    "parameters, calculate, scenarios, check, output, programming, session, "
-    "epd) or a command name (for example 'MAKE PROCESS'): syntax, an "
-    "example and notes."
+    "The olcaBASIC command reference, straight from the language's command "
+    "registry. Without a topic: the rules of the language, the commands "
+    "most programs use and the name of every command (short; read it "
+    "before the first olcabasic_run). With a topic ("
+    + ", ".join(t.lower() for t in registry.TOPICS)
+    + ") or a command name (for example 'MAKE PROCESS' or 'RESULT "
+    "CONTRIBUTION'): syntax, an example and notes."
 )
 
 RESET_DESCRIPTION = (
@@ -65,7 +68,10 @@ RESET_DESCRIPTION = (
 
 PYTHON_DESCRIPTION = (
     "Run Python against the live session, for jobs olcaBASIC has no "
-    "command for. The namespace holds: session (the olcaBASIC Session; "
+    "command for. It skips every rule olcaBASIC enforces (bridges, exact "
+    "names, validation, stale systems, EPD and programme rules): what it "
+    "writes to the database is checked by nothing, so tell the user what "
+    "you did with it. The namespace holds: session (the olcaBASIC Session; "
     "session.run('...') works), engine (its Engine), client (its "
     "olca_ipc.Client, for raw IPC) and o (olca_schema). It shares the "
     "session's connection and lock. why_not_basic is required: name the "
@@ -251,6 +257,25 @@ class OpenLCAMCPServer:
             }, indent=1)
         result = self.session.run(code, dry_run=dry_run).to_dict()
         text = json.dumps(result, indent=1, default=str)
+        if len(text) > MAX_REPLY_CHARS:
+            # First shorten the long tables (RESULT queries can return
+            # thousands of rows); the shape stays the one the Session
+            # gives, with rows_omitted saying how many were cut.
+            cut = 0
+            for entry in result["data"]:
+                inner = entry.get("result")
+                rows = inner.get("rows") if isinstance(inner, dict) else None
+                if isinstance(rows, list) and len(rows) > MAX_ROWS:
+                    inner["rows_omitted"] = len(rows) - MAX_ROWS
+                    inner["rows"] = rows[:MAX_ROWS]
+                    cut += 1
+            if cut:
+                result["rows_omitted"] = (
+                    f"{cut} table(s) were cut to their first {MAX_ROWS} "
+                    f"rows to keep the reply short. Add TOP n or a filter "
+                    f"(CATEGORY, FLOW, OF PROCESS) to the query, or SAVE "
+                    f"\"file.csv\" for the whole table.")
+                text = json.dumps(result, indent=1, default=str)
         if len(text) > MAX_REPLY_CHARS:
             kept = len(result["data"])
             result["data"] = []
