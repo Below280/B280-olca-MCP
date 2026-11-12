@@ -460,11 +460,17 @@ class FakeResult:
                 for pid, v in self.requirements.items()]
 
     def _column_of(self, tech_flow, scaled: bool) -> List[o.TechFlowValue]:
+        """One column of the technology matrix. As the server does, it
+        has an entry for every process of the system, most of them 0."""
         pid = tech_flow.provider.id
         s = (self.requirements.get(pid, 0.0) / self._qamount.get(pid, 1.0)
              if scaled else 1.0)
-        return [o.TechFlowValue(amount=v * s, tech_flow=self._tech_flow(other))
-                for other, v in self._column.get(pid, [])]
+        column: Dict[str, float] = {}
+        for other, v in self._column.get(pid, []):
+            column[other] = column.get(other, 0.0) + v * s
+        return [o.TechFlowValue(amount=column.get(other, 0.0),
+                                tech_flow=self._tech_flow(other))
+                for other in self.requirements]
 
     def get_scaled_tech_flows_of(self, tech_flow) -> List[o.TechFlowValue]:
         self._check()
@@ -718,22 +724,33 @@ class FakeResult:
                                 tech_flow=self._tech_flow(pid))
                 for pid, need in self.requirements.items()]
 
-    def get_direct_costs_of(self, tech_flow) -> o.CostValue:
+    # The server answers these three with a bare number; the client
+    # expects an object and fails on it. The fake fails the same way,
+    # so the engine has to ask through rpc_call, as it must live.
+
+    def _bare_number(self, value: float):
         self._check()
-        return self._cost_value(
-            self._cost_direct.get(tech_flow.provider.id, 0.0)
-            * self._need(tech_flow))
+        return o.CostValue.from_dict(value)     # AttributeError, as live
+
+    def get_direct_costs_of(self, tech_flow) -> o.CostValue:
+        return self._bare_number(self._direct_costs(tech_flow))
 
     def get_cost_intensities_of(self, tech_flow) -> o.CostValue:
-        self._check()
-        return self._cost_value(
-            self._cost_per_unit.get(tech_flow.provider.id, 0.0))
+        return self._bare_number(self._cost_intensity(tech_flow))
 
     def get_total_costs_of(self, tech_flow) -> o.CostValue:
-        self._check()
-        return self._cost_value(
-            self._cost_per_unit.get(tech_flow.provider.id, 0.0)
-            * self._need(tech_flow))
+        return self._bare_number(self._total_costs(tech_flow))
+
+    def _direct_costs(self, tech_flow) -> float:
+        return (self._cost_direct.get(tech_flow.provider.id, 0.0)
+                * self._need(tech_flow))
+
+    def _cost_intensity(self, tech_flow) -> float:
+        return self._cost_per_unit.get(tech_flow.provider.id, 0.0)
+
+    def _total_costs(self, tech_flow) -> float:
+        return (self._cost_per_unit.get(tech_flow.provider.id, 0.0)
+                * self._need(tech_flow))
 
     # analysis groups
 
@@ -1216,6 +1233,10 @@ class FakeClient:
         if since and (self._version_tuple(self.server_version)
                       < self._version_tuple(since)):
             return None, f"-32601: Does not understand: {method}"
+        if method == "data/put/source-file":
+            if not params:
+                return None, "-32602: Invalid parameters"
+            return "ok", None
         if method == "runtime/shutdown":
             self.shut_down = True
             return "ok", None
@@ -1244,6 +1265,12 @@ class FakeClient:
                 return [v.to_dict() for v in result.get_total_requirements()], None
             if method == "result/totality-factor-of":
                 return result.get_total_requirements_of(tf).to_dict(), None
+            if method == "result/direct-costs-of":
+                return result._direct_costs(tf), None
+            if method == "result/cost-intensities-of":
+                return result._cost_intensity(tf), None
+            if method == "result/total-costs-of":
+                return result._total_costs(tf), None
             if method.startswith("result/tag-results-of-"):
                 return result._tag_results(method, params), None
         return None, f"-32601: Does not understand: {method}"
@@ -1264,6 +1291,15 @@ class FakeClient:
             for system in self.store["ProductSystem"].values():
                 if uid in self._system_process_ids(system):
                     out.append(self._descriptor(system))
+        else:
+            # every other type: whatever holds a reference to it
+            import json
+            for table in self.store.values():
+                for entity in table.values():
+                    if entity.id == uid:
+                        continue
+                    if f'"{uid}"' in json.dumps(entity.to_dict()):
+                        out.append(self._descriptor(entity))
         return out
 
     def put_source_file(self, source, file_data) -> bool:
