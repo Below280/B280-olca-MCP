@@ -209,16 +209,16 @@ class OpenLCAMCPServer:
         if name == "olcabasic_help":
             return self._help(arguments.get("topic") or "")
         if self.session is None:
-            return ("The server has no session yet. Restart it once openLCA "
-                    "is running.")
+            return ("The server is still starting and has no session yet. "
+                    "Try again in a moment.")
         if name == "olcabasic_run":
             return self._run(arguments.get("code", ""),
                              bool(arguments.get("dry_run", False)))
         if name == "olcabasic_reset":
             self.session.reset()
             return ("Session state cleared: variables, SUBs, folders, "
-                    "scenarios, last results and CONFIRM DELETE. The "
-                    "database was not touched.")
+                    "scenarios, last results, the active EPD and CONFIRM "
+                    "DELETE. The database was not touched.")
         if name == "python_exec" and self.allow_python:
             result = python_exec.run(self.session, arguments.get("code", ""),
                                      arguments.get("why_not_basic", ""))
