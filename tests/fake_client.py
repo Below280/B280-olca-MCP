@@ -1467,31 +1467,74 @@ def _impacts(gwp: float, biogenic: float = 0.0, acid: float = 0.0,
 # climate ones mean anything; the rest are numbered).
 EPD_METHOD = "EN15804+A2 (EF 3.1)"
 EPD_SHORT_METHOD = "Environment | EN15804+A2 (EF v3.1)"
-EPD_GWP = "Test climate change, GWP-GHG"
+EPD_TOTAL = "Test climate change, total (GWP-total)"
+EPD_FOSSIL = "Test climate change, fossil (GWP-fossil)"
+EPD_BIOGENIC = "Test climate change, biogenic (GWP-biogenic)"
+EPD_GWP = "Test climate change, GWP-GHG (GWP-GHG)"
+
+# The other sixteen impact indicators and the eighteen resource use,
+# waste and output flow indicators, with the codes openLCA's EN 15804
+# method packs put in brackets. The names are made up.
+_EPD_IMPACT_CODES = ("GWP-luluc", "ODP", "AP", "EP-freshwater", "EP-marine",
+                     "EP-terrestrial", "POCP", "ADPE", "ADPF", "WDP", "PM",
+                     "IRP", "ETP-fw", "HTP-c", "HTP-nc", "SQP")
+_EPD_OTHER_CODES = ("PERE", "PERM", "PERT", "PENRE", "PENRM", "PENRT", "SM",
+                    "RSF", "NRSF", "FW", "HWD", "NHWD", "RWD", "CRU", "MFR",
+                    "MER", "EEE", "EET")
+
+
+def epd_indicator(n: int) -> str:
+    """The name of synthetic EPD indicator n (5 to 38)."""
+    code = (_EPD_IMPACT_CODES + _EPD_OTHER_CODES)[n - 5]
+    return f"Test indicator {n:02d} ({code})"
+
+
+EPD_IMPACT_INDICATORS = [EPD_TOTAL, EPD_FOSSIL, EPD_BIOGENIC, EPD_GWP] + [
+    epd_indicator(n) for n in range(5, 21)]
+
 EPD_CATEGORIES = {
-    "Test climate change, total": "kg CO2 eq.",
-    "Test climate change, fossil": "kg CO2 eq.",
-    "Test climate change, biogenic": "kg CO2 eq.",
+    EPD_TOTAL: "kg CO2 eq.",
+    EPD_FOSSIL: "kg CO2 eq.",
+    EPD_BIOGENIC: "kg CO2 eq.",
     EPD_GWP: "kg CO2 eq.",
-    **{f"Test indicator {n:02d}": "test unit" for n in range(5, 39)},
+    **{epd_indicator(n): "test unit" for n in range(5, 39)},
 }
 EPD_SHORT_CATEGORIES = dict(list(EPD_CATEGORIES.items())[:20])
 
+# Biogenic carbon, as flows: an uptake from air (a resource, -1), an
+# emission of biogenic CO2 (+1) and biogenic methane (a made-up factor).
+BIO_UPTAKE = "Carbon dioxide, in air"
+BIO_CO2 = "Carbon dioxide, non-fossil"
+BIO_CH4 = "Methane, non-fossil"
+BIO_CH4_FACTOR = 27.0
+
 
 def _epd_impacts(gwp, biogenic, acid, eutro, water) -> Dict[str, float]:
-    out = {"Test climate change, total": gwp + biogenic,
-           "Test climate change, fossil": gwp,
-           "Test climate change, biogenic": biogenic,
+    out = {EPD_TOTAL: gwp + biogenic,
+           EPD_FOSSIL: gwp,
+           EPD_BIOGENIC: biogenic,
            EPD_GWP: gwp}
     for n in range(5, 39):
-        out[f"Test indicator {n:02d}"] = (acid, eutro, water)[n % 3] * n
+        out[epd_indicator(n)] = (acid, eutro, water)[n % 3] * n
     return out
 
 
 def add_epd_methods(client: "FakeClient") -> "FakeClient":
     """Add the synthetic EN 15804+A2 method (38 categories) and its
-    shorter namesake (20), as an LCIA pack would."""
-    client.add_method(EPD_METHOD, EPD_CATEGORIES)
+    shorter namesake (20), as an LCIA pack would, with the biogenic
+    carbon flows the method characterises."""
+    uptake = client.add_flow(
+        BIO_UPTAKE, "Mass", o.FlowType.ELEMENTARY_FLOW,
+        category="Elementary flows/Resource/in air")
+    co2 = client.add_flow(
+        BIO_CO2, "Mass", o.FlowType.ELEMENTARY_FLOW,
+        category="Elementary flows/Emission to air/unspecified")
+    ch4 = client.add_flow(
+        BIO_CH4, "Mass", o.FlowType.ELEMENTARY_FLOW,
+        category="Elementary flows/Emission to air/unspecified")
+    bio = {uptake.id: -1.0, co2.id: 1.0, ch4.id: BIO_CH4_FACTOR}
+    client.add_method(EPD_METHOD, EPD_CATEGORIES,
+                      {EPD_BIOGENIC: bio, EPD_TOTAL: bio})
     client.add_method(EPD_SHORT_METHOD, EPD_SHORT_CATEGORIES)
     return client
 
