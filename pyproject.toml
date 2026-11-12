@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "MCP server connecting AI assistants to openLCA via its IPC server"
 readme = "README.md"
 license = {file = "LICENSE"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     {name = "Below280", email = "info@below280.com"}
 ]
@@ -22,7 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=2.1,<3",
-    "olca-ipc>=2.4.0,<3",
+    "olcabasic>=0.4.0,<0.5",
 ]
 
 [project.urls]

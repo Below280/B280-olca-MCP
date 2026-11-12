@@ -22,8 +22,8 @@ import mcp.types as types
 from olca_ipc import Client
 import olca_schema as o
 
-from .functions import LCAFunctions
-from .ipc_reference import IPC_PROTOCOL_REFERENCE
+from olcabasic.engine import Engine
+from olcabasic.engine.ipc_reference import IPC_PROTOCOL_REFERENCE
 from .openlca_resources import OPENLCA_RESOURCES
 
 logging.basicConfig(level=logging.INFO)
@@ -747,7 +747,7 @@ class OpenLCAMCPServer:
             self.client = Client(port)
             processes = self.client.get_descriptors(o.Process)
             logger.info(f"Connected: {len(processes)} processes")
-            self.lca = LCAFunctions(self.client)
+            self.lca = Engine(self.client)
             return True
         except Exception as e:
             logger.error(f"Connection failed: {e}")

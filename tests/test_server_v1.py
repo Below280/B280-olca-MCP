@@ -7,11 +7,11 @@ from conftest import Harness
 
 @pytest.fixture
 def harness(client):
-    from b280_olca_mcp.functions import LCAFunctions
+    from olcabasic.engine import Engine
     from b280_olca_mcp.server import OpenLCAMCPServer
     server = OpenLCAMCPServer()
     server.client = client
-    server.lca = LCAFunctions(client)
+    server.lca = Engine(client)
     server.setup_handlers()
     return Harness(server)
 
