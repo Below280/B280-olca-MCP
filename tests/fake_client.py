@@ -1052,6 +1052,8 @@ class FakeClient:
         self._note("put", type(entity).__name__, getattr(entity, "name", ""))
         if not getattr(entity, "id", None):
             entity.id = str(uuid.uuid4())
+        if len(",".join(getattr(entity, "tags", None) or [])) > 255:
+            return None               # what openLCA does: the save is refused
         stored = copy.deepcopy(entity)
         if isinstance(stored, o.ImpactMethod) and self.drops_method_source:
             stored.source = None      # what openLCA 2.6 does
@@ -1097,6 +1099,8 @@ class FakeClient:
             return []
         out = []
         for p in self.store["Parameter"].values():
+            if p.parameter_scope not in (None, o.ParameterScope.GLOBAL_SCOPE):
+                continue          # a process's own, listed as openLCA does
             if p.is_input_parameter:
                 out.append(o.ParameterRedef(name=p.name, value=p.value, context=None))
         for pid in self._system_process_ids(system):
