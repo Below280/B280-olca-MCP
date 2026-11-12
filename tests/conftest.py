@@ -17,6 +17,26 @@ def client() -> FakeClient:
     return seed_ecoinvent_like()
 
 
+@pytest.fixture(autouse=True)
+def clean_environment(monkeypatch, tmp_path):
+    """Each test chooses its own flags, and nothing writes to the real
+    ~/.olcabasic."""
+    for name in ("OLCA_MCP_ALLOW_PYTHON", "OLCA_MCP_LEGACY_TOOLS",
+                 "OLCA_MCP_PYTHON_TIMEOUT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OLCA_MCP_PYTHON_LOG", str(tmp_path / "python_log.jsonl"))
+
+
+def make_server(client):
+    """A server on a Session that uses the fake client. Flags are read
+    from the environment when the server is created."""
+    from olcabasic import Session
+    from b280_olca_mcp.server import OpenLCAMCPServer
+    server = OpenLCAMCPServer(Session(client=client))
+    server.setup_handlers()
+    return server
+
+
 class Harness:
     """Drives an OpenLCAMCPServer through its registered MCP handlers."""
 
