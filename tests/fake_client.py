@@ -1067,6 +1067,7 @@ class FakeClient:
         if len(",".join(getattr(entity, "tags", None) or [])) > 255:
             return None               # what openLCA does: the save is refused
         stored = copy.deepcopy(entity)
+        self._settle_category(stored)
         if isinstance(stored, o.ImpactMethod) and self.drops_method_source:
             stored.source = None      # what openLCA 2.6 does
         if isinstance(stored, o.SocialIndicator) and not stored.activity_quantity:
@@ -1076,6 +1077,29 @@ class FakeClient:
                 self.unit_by_id[u.id] = u
         self.store.setdefault(type(stored).__name__, {})[stored.id] = stored
         return self._descriptor(stored)
+
+    def _settle_category(self, stored):
+        """openLCA matches folder names whatever their case, and keeps
+        the spelling of the folder that is there: something put into
+        "Elementary flows/emission to air" lands in "Elementary
+        flows/Emission to air"."""
+        category = getattr(stored, "category", None)
+        if not category:
+            return
+        table = self.store.get(type(stored).__name__, {})
+        known = {}
+        for other in table.values():
+            parts = (getattr(other, "category", None) or "").split("/")
+            for n in range(1, len(parts) + 1):
+                path = "/".join(parts[:n])
+                known.setdefault(path.lower(), path)
+        parts = category.split("/")
+        settled = []
+        for part in parts:
+            path = "/".join(settled + [part])
+            there = known.get(path.lower())
+            settled = there.split("/") if there else settled + [part]
+        stored.category = "/".join(settled)
 
     def delete(self, entity):
         self._note("delete", type(entity).__name__, getattr(entity, "name", ""))
