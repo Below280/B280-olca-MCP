@@ -1,6 +1,4 @@
 """
-Copied from olcaBASIC tests/fake_client.py. Keep the two in step.
-
 An in-memory stand-in for olca_ipc.Client.
 
 It holds olca_schema objects in dictionaries and implements the part of
@@ -139,12 +137,18 @@ class FakeResult:
         return amount * factor
 
     def _provider_of(self, proc, ex) -> Optional[str]:
+        # As in openLCA, a link belongs to one exchange: two inputs of
+        # the same flow can have different providers.
+        fallback = None
         for link in self.system.process_links or []:
             if (link.process and link.process.id == proc.id
                     and link.flow and ex.flow and link.flow.id == ex.flow.id
                     and link.provider):
-                return link.provider.id
-        return None
+                if link.exchange is None:
+                    fallback = fallback or link.provider.id
+                elif link.exchange.internal_id == ex.internal_id:
+                    return link.provider.id
+        return fallback
 
     def _qref(self, proc):
         for ex in proc.exchanges or []:
@@ -764,7 +768,42 @@ def _impacts(gwp: float, biogenic: float = 0.0, acid: float = 0.0,
         "Climate change: fossil - Global warming potential (GWP100)": gwp,
         "Climate change: biogenic - Global warming potential (GWP100)": biogenic,
         "Climate change: total - Global warming potential (GWP100)": gwp + biogenic,
+        **_epd_impacts(gwp, biogenic, acid, eutro, water),
     }
+
+
+# A synthetic EN 15804+A2 indicator set: the right number of categories
+# for the EPD workflow's method check, with made-up names (only the
+# climate ones mean anything; the rest are numbered).
+EPD_METHOD = "EN15804+A2 (EF 3.1)"
+EPD_SHORT_METHOD = "Environment | EN15804+A2 (EF v3.1)"
+EPD_GWP = "Test climate change, GWP-GHG"
+EPD_CATEGORIES = {
+    "Test climate change, total": "kg CO2 eq.",
+    "Test climate change, fossil": "kg CO2 eq.",
+    "Test climate change, biogenic": "kg CO2 eq.",
+    EPD_GWP: "kg CO2 eq.",
+    **{f"Test indicator {n:02d}": "test unit" for n in range(5, 39)},
+}
+EPD_SHORT_CATEGORIES = dict(list(EPD_CATEGORIES.items())[:20])
+
+
+def _epd_impacts(gwp, biogenic, acid, eutro, water) -> Dict[str, float]:
+    out = {"Test climate change, total": gwp + biogenic,
+           "Test climate change, fossil": gwp,
+           "Test climate change, biogenic": biogenic,
+           EPD_GWP: gwp}
+    for n in range(5, 39):
+        out[f"Test indicator {n:02d}"] = (acid, eutro, water)[n % 3] * n
+    return out
+
+
+def add_epd_methods(client: "FakeClient") -> "FakeClient":
+    """Add the synthetic EN 15804+A2 method (38 categories) and its
+    shorter namesake (20), as an LCIA pack would."""
+    client.add_method(EPD_METHOD, EPD_CATEGORIES)
+    client.add_method(EPD_SHORT_METHOD, EPD_SHORT_CATEGORIES)
+    return client
 
 
 def seed_ecoinvent_like(client: Optional[FakeClient] = None) -> FakeClient:
