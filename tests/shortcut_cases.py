@@ -323,6 +323,15 @@ END PROCESS''',
                  "amount is 0.8 in the database and 0.9 in the block"),
         hint=('EDIT PROCESS "Widget"', 'DELETE PROCESS "Widget"')),
     Shortcut(
+        "a bridge block that now names another provider", "changed block",
+        setup=[FOLDERS + BRIDGES],
+        program=f'''BRIDGE "electricity", kWh
+  PROVIDER "{ELECTRICITY}" LOCATION "DE"
+END BRIDGE''',
+        at='BRIDGE "electricity", kWh',
+        message=("the bridge exists and passes on", "[GB]", "[DE]"),
+        hint=('EDIT PROCESS "BRIDGE | electricity | kWh"',)),
+    Shortcut(
         "a calculation on a stale system", "stale system",
         setup=[widget() + SYSTEM,
                f'EDIT PROCESS "Widget"\n  UPDATE INPUT "{B_STEEL}", 1.5, kg\n'

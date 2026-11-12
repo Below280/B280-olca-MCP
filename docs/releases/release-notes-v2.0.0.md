@@ -79,4 +79,4 @@ What stays a conversation is deciding which item of the inventory belongs in whi
 
 - Replies above 60,000 characters are cut, and say so.
 - The server reports its own version to the client (it reported the MCP library's default before).
-- `tests/`: 152 offline tests, including the version 1 server tests run with the legacy flag on and the shortcut suite (`tests/test_shortcuts.py`): 25 programs that each try one way round a rule, sent through `olcabasic_run`, each refused with a line and a hint and the database unchanged. They run against a fake openLCA client, so no database is needed.
+- `tests/`: 152 offline tests, including the version 1 server tests run with the legacy flag on and the shortcut suite (`tests/test_shortcuts.py`): 26 programs that each try one way round a rule, sent through `olcabasic_run`, each refused with a line and a hint and the database unchanged. They run against a fake openLCA client, so no database is needed.

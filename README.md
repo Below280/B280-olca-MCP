@@ -184,7 +184,7 @@ The language refuses anything that would build or calculate a wrong model, and a
 
 Three kinds of command ask a person a question, and only run in the olcaBASIC terminal: `PARAMETERISE ... ALL`, changing an impact method olcaBASIC did not make, and `SHUTDOWN SERVER`. Through the MCP they are refused with a hint that says so.
 
-`tests/test_shortcuts.py` plays an assistant cutting corners: 25 programs, each trying one way round a rule, each refused with the database unchanged.
+`tests/test_shortcuts.py` plays an assistant cutting corners: 26 programs, each trying one way round a rule, each refused with the database unchanged.
 
 ### Two flags
 
