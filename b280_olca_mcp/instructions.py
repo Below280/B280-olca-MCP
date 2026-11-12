@@ -116,7 +116,9 @@ Propose an assignment, flag every assumption (electricity: A1 or A3?
 internal transport: A2 or A3? packaging: A1 or A3? production waste:
 A3 or C3?) and do not build until the user confirms. Use the full
 names of the modules, not only the codes. Pedigree scores and process
-documentation still have to be completed by a practitioner.
+documentation still have to be completed by a practitioner. A rule of
+the programme operator (PROGRAMME in the EPD block) is an error with
+no override: say what the rule needs; never look for a way round it.
 
 Parameterising database processes (replacing fixed amounts with
 parameters) changes them for good. Tell the user to back up the
