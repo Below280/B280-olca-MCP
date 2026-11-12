@@ -54,6 +54,30 @@ def test_a_dry_run_does_not_get_round_it_either(case):
     assert sc.snapshot(client) == before
 
 
+def test_the_reset_tool_does_not_get_round_the_rules():
+    """olcabasic_reset clears the session. A system changed or failed
+    before it is still refused after it (12/11/2026)."""
+    client, harness = harness_for(sc.CASES[0])
+    run = lambda code: harness.call("olcabasic_run", {"code": code})
+    assert run(sc.widget() + sc.SYSTEM)["ok"]
+    assert run(sc.ADD_STEEL)["ok"]
+    harness.call("olcabasic_reset", {})
+    calls = len(client.results)
+    reply = run(sc.CALC)
+    assert not reply["ok"] and "is out of date" in reply["errors"][0]["message"]
+    assert len(client.results) == calls
+
+    client, harness = harness_for(sc.CASES[0])
+    run = lambda code: harness.call("olcabasic_run", {"code": code})
+    assert run(sc.widget() + 'SYSTEM "Widget"\n')["ok"]
+    sc.break_widget(client, harness.server.session)
+    run('VALIDATE "Widget"')
+    harness.call("olcabasic_reset", {})
+    reply = run(sc.CALC)
+    assert not reply["ok"]
+    assert "failed VALIDATE just now" in reply["errors"][0]["message"]
+
+
 def test_every_rule_of_the_design_has_a_case():
     assert {case.rule for case in sc.CASES} == set(sc.RULES)
 

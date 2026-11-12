@@ -178,7 +178,7 @@ The language refuses anything that would build or calculate a wrong model, and a
 - a background process used without a bridge;
 - a name that could mean several processes or flows, and a method name that is not the full name;
 - a `MAKE PROCESS` block run again after it was changed;
-- a calculation on a product system that is out of date (one of its processes was edited, linked, moved or parameterised) or that failed `VALIDATE`;
+- a calculation on a product system that is out of date (one of its processes was edited, linked, moved or parameterised, or its links no longer match its processes) or that failed `VALIDATE`. `olcabasic_reset` and a new session do not get round either: the links are compared with the database every time, and a system not checked in the session is checked before it is calculated;
 - an output that would create a flow by accident, a new emission that the method has no factor for, Monte Carlo with nothing uncertain, allocation without factors;
 - in an EPD: a module using another module's process, and any broken rule of the programme.
 

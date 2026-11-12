@@ -14,7 +14,7 @@ Needs olcaBASIC 0.4.0 and Python 3.11 or later. [MIGRATION.md](../MIGRATION.md) 
 |---|---|
 | `olcabasic_run` | Run an olcaBASIC program (`code`), or check it without touching openLCA (`dry_run`). Returns `ok`, `text`, `data` (the structured result of every command, `RESULT` queries included, in the shape `olcabasic.Session` gives Python), `errors`, `warnings` |
 | `olcabasic_help` | The command reference: overview, a topic, or one command. Generated from the same registry as olcaBASIC's `HELP` |
-| `olcabasic_reset` | Clear the session's variables, scenarios and active EPD. The database is not touched |
+| `olcabasic_reset` | Clear the session's variables, scenarios and active EPD. The database is not touched. It does not get round a rule: a product system changed before a reset is still out of date after it, and a system that failed `VALIDATE` is checked again before it is calculated |
 
 One session lasts as long as the server: variables, the current folder, scenarios and the latest results carry over between calls. Calls run one at a time, so product systems are never created in parallel.
 

@@ -196,6 +196,24 @@ def break_widget(client, session):
         ex.is_quantitative_reference = False
 
 
+def reset(client, session):
+    """What olcabasic_reset (or RESET) does."""
+    session.reset()
+
+
+def new_session(client, session):
+    """Leave the session as a new one starts: nothing remembered about
+    which systems were checked or changed."""
+    session.reset()
+    session.runtime.validation.clear()
+    session.runtime.stale_systems.clear()
+    session.runtime.revalidate.clear()
+
+
+ADD_STEEL = (f'EDIT PROCESS "Widget"\n'
+             f'  ADD INPUT USE PROCESS "{B_STEEL}", 0.1, kg\nEND EDIT')
+
+
 def fixed_amount_process(client, session):
     """A database process with fixed amounts and an emission: what
     PARAMETERISE ... ALL would rewrite."""
@@ -366,6 +384,36 @@ END BRIDGE''',
         at="CALCULATE",
         message=("'Widget' failed VALIDATE earlier in this session",),
         hint=('DELETE SYSTEM "Widget"', "VALIDATE")),
+    Shortcut(
+        "a failed VALIDATE, then RESET", "validation",
+        setup=[widget() + 'SYSTEM "Widget"\n', break_widget,
+               'VALIDATE "Widget"', reset],
+        program=CALC,
+        at="CALCULATE",
+        message=("'Widget' failed VALIDATE just now",),
+        hint=('DELETE SYSTEM "Widget"', "VALIDATE")),
+    Shortcut(
+        "a failed VALIDATE, then a new session", "validation",
+        setup=[widget() + 'SYSTEM "Widget"\n', break_widget,
+               'VALIDATE "Widget"', new_session],
+        program=CALC,
+        at="CALCULATE",
+        message=("'Widget' failed VALIDATE just now",),
+        hint=('DELETE SYSTEM "Widget"', "VALIDATE")),
+    Shortcut(
+        "an input added, then RESET", "stale system",
+        setup=[widget() + SYSTEM, ADD_STEEL, reset],
+        program=CALC,
+        at="CALCULATE",
+        message=("'Widget' is out of date",),
+        hint=('DELETE SYSTEM "Widget"', 'VALIDATE "Widget"')),
+    Shortcut(
+        "an input added, then a new session", "stale system",
+        setup=[widget() + SYSTEM, ADD_STEEL, new_session],
+        program=CALC,
+        at="CALCULATE",
+        message=("'Widget' is out of date", "has no link"),
+        hint=('DELETE SYSTEM "Widget"', 'VALIDATE "Widget"')),
 
     # EPD and programme rules
     Shortcut(
