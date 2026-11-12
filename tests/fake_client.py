@@ -783,13 +783,25 @@ class FakeResult:
         named, top = self._group_names()
         sums: Dict[str, float] = {}
 
-        def walk(pid, amount, group, path):
+        # In a large system openLCA only steps into a process that is
+        # in a group itself (client.large_system = True does the same):
+        # everything behind an ungrouped process stays with the group
+        # above it, and with no grouped process straight under the
+        # reference process nothing comes back at all.
+        reduced = getattr(self.client, "large_system", False)
+        if reduced and not any(child in named for child, _ in
+                               self._children.get(self.root.id, [])):
+            return []
+
+        def walk(pid, amount, group, path, frozen=False):
             if pid in path:
                 return
-            group = named.get(pid, group)
+            if not frozen:
+                group = named.get(pid, group)
             sums[group] = sums.get(group, 0.0) + direct(pid) * amount
             for child, share in self._children.get(pid, []):
-                walk(child, amount * share, group, path + (pid,))
+                walk(child, amount * share, group, path + (pid,),
+                     frozen or (reduced and child not in named))
 
         walk(self.root.id, self.demand, top, ())
         return [o.GroupValue(group=g, amount=v) for g, v in sums.items()]
