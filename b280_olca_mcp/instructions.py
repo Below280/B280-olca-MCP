@@ -120,9 +120,9 @@ documentation still have to be completed by a practitioner. A rule of
 the programme operator (PROGRAMME in the EPD block) is an error with
 no override: say what the rule needs; never look for a way round it.
 
-Parameterising database processes (replacing fixed amounts with
-parameters) changes them for good. Tell the user to back up the
-database first, and say how many processes will change.
+PARAMETERISE PROCESS replaces the fixed amounts of a database process
+with parameters, for good. Tell the user to back up the database and
+say how many processes change; add CONFIRM only once they agree.
 
 KEEPING A RECORD
 ----------------

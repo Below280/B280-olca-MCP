@@ -37,6 +37,7 @@ Each of these used to pass quietly, or depended on the assistant following its i
 | Sensitivity without a range | Varied by 20% | Parse error | Say the range: `BY 10%` |
 | Tier 1 model check | The instructions asked the assistant not to present it as proof | The output always ends by saying it checked structure only | Nothing |
 | Defaults (allocation, linking, top n, runs) | Applied silently | Stated in the output the first time each is used | Nothing |
+| Parameterising a database process | The instructions asked the assistant to warn about backups first | `PARAMETERISE PROCESS "name" CONFIRM`: refused without `CONFIRM`, and the refusal says how many amounts would change and to back up first | Back up the database, then add `CONFIRM` |
 | EPD modelling | Seven steps of advice in the instructions | Commands that refuse a wrong module set, a wrong method, a background process used directly, and a programme rule that is broken | See "EPDs" below |
 | `from b280_olca_mcp.functions import LCAFunctions` | The engine | A shim: works, with a `DeprecationWarning` | `from olcabasic.engine import Engine` |
 | Dependencies | `mcp`, `olca-ipc` | `mcp`, `olcabasic` (which brings `olca-ipc`) | `pip install --upgrade b280-olca-mcp` |
@@ -56,7 +57,3 @@ What stays a conversation is deciding which item of the inventory belongs in whi
 - Replies above 60,000 characters are cut, and say so.
 - The server reports its own version to the client (it reported the MCP library's default before).
 - `tests/`: 67 offline tests, including the version 1 server tests run with the legacy flag on. They run against a fake openLCA client, so no database is needed.
-
-## Not in this release
-
-- `PARAMETERISE PROCESS` (turning the fixed amounts of a database process into parameters) is not a command yet. With the legacy tools on, `edit_process` still does it.

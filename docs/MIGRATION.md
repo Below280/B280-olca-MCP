@@ -75,6 +75,8 @@ Without the flag, a call to an old tool name is answered with an error that says
 | `sensitivity_csv` | the same block with `FROM "file.csv"` in place of `VARY` |
 | `help` | the `olcabasic_help` tool |
 
+New in olcaBASIC, with no version 1 tool: the EPD commands (`olcabasic_help` topic `epd`), `PARAMETERISE PROCESS`, `MOVE`, `LINK`, `CHECK`, `SAVE PROGRAM`.
+
 `olcabasic_help` with a command name (`MAKE PROCESS`, `SENSITIVITY`) gives the full syntax and an example of each.
 
 The reply is JSON with five fields:
