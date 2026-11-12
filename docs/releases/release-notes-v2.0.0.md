@@ -37,7 +37,7 @@ Each of these used to pass quietly, or depended on the assistant following its i
 | Sensitivity without a range | Varied by 20% | Parse error | Say the range: `BY 10%` |
 | Tier 1 model check | The instructions asked the assistant not to present it as proof | The output always ends by saying it checked structure only | Nothing |
 | Defaults (allocation, linking, top n, runs) | Applied silently | Stated in the output the first time each is used | Nothing |
-| Parameterising a database process | The instructions asked the assistant to warn about backups first | `PARAMETERISE PROCESS "name" CONFIRM`: refused without `CONFIRM`, and the refusal says how many amounts would change and to back up first | Back up the database, then add `CONFIRM` |
+| Parameterising a database process | The instructions asked the assistant to warn about backups first | `PARAMETERISE PROCESS "name" CONFIRM`: refused without `CONFIRM`, and the refusal says how many amounts would change and to back up first | Back up the database, then add `CONFIRM`. `ALL` (elementary flows too) asks twice at the olcaBASIC terminal and is refused through the MCP |
 | EPD modelling | Seven steps of advice in the instructions | Commands that refuse a wrong module set, a wrong method, a background process used directly, and a programme rule that is broken | See "EPDs" below |
 | `from b280_olca_mcp.functions import LCAFunctions` | The engine | A shim: works, with a `DeprecationWarning` | `from olcabasic.engine import Engine` |
 | Dependencies | `mcp`, `olca-ipc` | `mcp`, `olcabasic` (which brings `olca-ipc`) | `pip install --upgrade b280-olca-mcp` |
