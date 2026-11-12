@@ -38,3 +38,6 @@ include = ["b280_olca_mcp*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "b280_olca_mcp.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
