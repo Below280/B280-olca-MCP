@@ -12,11 +12,17 @@ WIDGET = f'''
 CONFIRM DELETE ON
 SET PROCESS FOLDER "00: Test"
 SET FLOW FOLDER "00: Test"
+BRIDGE "electricity", kWh
+  PROVIDER "{ELECTRICITY}" LOCATION "GB"
+END BRIDGE
+BRIDGE "steel", kg
+  PROVIDER "{STEEL}"
+END BRIDGE
 LET elec = 2.5
 MAKE PROCESS "Widget"
   OUTPUT MAKE FLOW "Widget", 1, kg, PRODUCT
-  INPUT USE PROCESS "{ELECTRICITY}", elec, kWh LOCATION "GB"
-  INPUT USE PROCESS "{STEEL}", 0.8, kg
+  INPUT USE PROCESS "BRIDGE | electricity | kWh", elec, kWh
+  INPUT USE PROCESS "BRIDGE | steel | kg", 0.8, kg
 END PROCESS
 SYSTEM "Widget"
 '''
@@ -115,7 +121,7 @@ def test_errors_come_back_with_line_and_hint(harness):
     r = harness.call("olcabasic_run", {"code": WIDGET.replace(' LOCATION "GB"', "")})
     assert not r["ok"]
     error = r["errors"][0]
-    assert error["line"] == 8 and "matches 3 processes" in error["message"]
+    assert error["line"] == 5 and "matches 3 processes" in error["message"]
     assert "LOCATION" in error["hint"]
 
 

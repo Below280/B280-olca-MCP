@@ -33,6 +33,12 @@ def _uid(*parts) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, "olcabasic-fake/" + "/".join(parts)))
 
 
+def bg_id(name: str, location: str = "") -> str:
+    """The id of a seeded background process: stable, so a test program
+    can name one of several same-named processes without a client."""
+    return _uid("proc", name, location)
+
+
 _FORMULA_FUNCS = {
     "abs": abs, "min": min, "max": max, "sqrt": math.sqrt, "ln": math.log,
     "log": math.log10, "exp": math.exp, "sin": math.sin, "cos": math.cos,
@@ -929,6 +935,7 @@ class FakeClient:
         # The openLCA version the fake server pretends to be: decides
         # which IPC methods rpc_call understands.
         self.server_version = "2.6.2"
+        self.drops_method_source = False
 
     # ── helpers ──────────────────────────────────────────────
 
@@ -1046,6 +1053,10 @@ class FakeClient:
         if not getattr(entity, "id", None):
             entity.id = str(uuid.uuid4())
         stored = copy.deepcopy(entity)
+        if isinstance(stored, o.ImpactMethod) and self.drops_method_source:
+            stored.source = None      # what openLCA 2.6 does
+        if isinstance(stored, o.SocialIndicator) and not stored.activity_quantity:
+            stored.activity_unit = None   # openLCA keeps the unit only with it
         if isinstance(stored, o.UnitGroup):
             for u in stored.units or []:
                 self.unit_by_id[u.id] = u
