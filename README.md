@@ -2,9 +2,11 @@
 
 An MCP (Model Context Protocol) server that connects AI assistants to a running openLCA instance. Developed and tested with Claude Desktop; compatible with any MCP client that supports stdio transport. Built by [Below280](https://below280.com), the UK partner for openLCA.
 
-The server exposes 35 tools covering the full LCA workflow: exploring databases, building and editing models, running calculations (scenarios, sensitivity, Monte Carlo, contribution analysis), auditing and validating models, and extracting data quality assessments. All calculation patterns are tested against production ecoinvent databases.
+From version 2.0 the server is a thin layer over [olcaBASIC](https://github.com/Below280/olcaBASIC), a BASIC-style language for openLCA. The assistant writes a short olcaBASIC program and the server runs it: exploring databases, building and editing models, calculations (scenarios, sensitivity, Monte Carlo, contribution analysis), model checks, and EPDs to EN 15804+A2. The rules that used to be advice to the assistant (name the impact method, never pick between same-named processes, validate before calculating) are now enforced by the language, so they hold whichever assistant is driving.
 
-The server works with both ecoinvent-family databases (ecoinvent, EN15804GD, HiQLCD, BAFU) and FLCAC-family databases (LCA Commons, US LCI, USEEIO). It asks which family you are using, or auto-detects from the flow property names.
+The server works with both ecoinvent-family databases (ecoinvent, EN15804GD, HiQLCD, BAFU) and FLCAC-family databases (LCA Commons, US LCI, USEEIO). It detects the family from the flow property names, and refuses to build until the family is known.
+
+Upgrading from 1.x: see [docs/MIGRATION.md](docs/MIGRATION.md) and the [2.0.0 release notes](docs/releases/release-notes-v2.0.0.md).
 
 Available on [PyPI](https://pypi.org/project/b280-olca-mcp/) and the [MCP Registry](https://registry.modelcontextprotocol.io).
 
@@ -16,7 +18,7 @@ Available on [PyPI](https://pypi.org/project/b280-olca-mcp/) and the [MCP Regist
 pip install b280-olca-mcp
 ```
 
-This installs the server and its dependencies (`mcp`, `olca-ipc`) in one step. The server runs from anywhere with `python -m b280_olca_mcp`.
+This installs the server and its dependencies in one step: `mcp` and `olcabasic`, which brings `olca-ipc`. Python 3.11 or later. The server runs from anywhere with `python -m b280_olca_mcp`.
 
 ### Development setup (GitHub)
 
@@ -42,9 +44,10 @@ Someone using this MCP can say things like:
 - 'Validate my product system and check if the linking is correct'
 - 'Run 1000 Monte Carlo iterations and show me the uncertainty'
 - 'Help me connect to openLCA from R / Go / Rust'
-- 'What can you do?' (the help tool)
+- 'Build an EPD for this product under the International EPD System rules'
+- 'What can you do?'
 
-The AI assistant handles the conversation, builds the tool calls, and presents results visually with charts, tables, and exportable data.
+The AI assistant handles the conversation, writes the olcaBASIC program, and presents results visually with charts, tables, and exportable data. The program is the record of the work: `SAVE PROGRAM "model.baslca"` writes out everything that ran, and `RUN "model.baslca"` repeats it without an assistant.
 
 ## Connect your MCP client
 
@@ -154,69 +157,49 @@ The MCP server runs locally and communicates with openLCA on localhost. The AI c
 
 ## Tools
 
-### Explore (11 tools)
+Three tools, always present:
 
 | Tool | Purpose |
 |---|---|
-| `database_info` | Counts of systems, processes, flows, methods, parameters. Auto-detects database family |
-| `set_database_family` | Set ecoinvent or FLCAC naming conventions |
-| `list_systems` | List/search product systems |
-| `list_methods` | List/search impact assessment methods |
-| `search_processes` | Find processes by name, location, or category |
-| `search_flows` | Find flows by name and/or category folder |
-| `process_details` | Full process info: exchanges, parameters, providers |
-| `system_parameters` | List parameters for a product system |
-| `global_parameters` | Look up database-level parameters |
-| `find_unit` | Look up units and their flow properties |
-| `chemical_synonyms` | PubChem synonym search to find database matches |
+| `olcabasic_run` | Run an olcaBASIC program. Arguments: `code`, and `dry_run` to check a program without touching openLCA. Returns `ok`, `text` (what a terminal would show), `data` (results as structures), `errors` (line, message, hint) and `warnings` |
+| `olcabasic_help` | The command reference, from the same registry as olcaBASIC's `HELP`: no argument for the overview, a topic (`build`, `calculate`, `epd` ...) or a command (`MAKE PROCESS`) |
+| `olcabasic_reset` | Clear the session: variables, scenarios, folders, the active EPD. The database is not touched |
 
-### Build (8 tools)
+One session lasts as long as the server, so variables, the current folder, scenarios and the latest results carry over between calls. Calls run one at a time: two programs can never write to openLCA at once, and product systems are never created in parallel.
 
-| Tool | Purpose |
+The server starts whether or not openLCA is running. The first call that needs openLCA connects, and says what to do if it cannot.
+
+### Two flags
+
+Both are off by default and are set as environment variables in the MCP client's configuration.
+
+| Variable | Effect |
 |---|---|
-| `create_global_parameter` | Create or update a database-level parameter, as a value or a formula |
-| `create_flow` | Create product, waste, or elementary flows |
-| `edit_flow` | Add or update flow properties, or change the reference property |
-| `create_bridge` | Create a bridge flow + process in one call |
-| `create_process` | Build a process with exchanges, parameters, and providers |
-| `edit_process` | Edit an existing process: add/update/remove exchanges and parameters |
-| `create_system` | Create a product system from a process |
-| `delete_entity` | Delete a process, flow, or product system (requires user confirmation; refuses to delete a flow that is still in use) |
+| `OLCA_MCP_ALLOW_PYTHON=1` | Adds `python_exec`: run Python with `session`, `engine` and `client` in scope, for the cases olcaBASIC cannot express. It runs in the server process, under the same lock, with your user's rights. Each call needs a `why_not_basic` reason and is logged to `~/.olcabasic/python_log.jsonl` (`OLCA_MCP_PYTHON_LOG` moves the log; `OLCA_MCP_PYTHON_TIMEOUT` sets the time limit in seconds). Leave it off unless you want an assistant to be able to run code on your machine |
+| `OLCA_MCP_LEGACY_TOOLS=1` | Adds the 36 typed tools of version 1 (`search_processes`, `create_process`, `calculate` and so on), unchanged, for clients and prompts written against them. They are listed in [docs/tools.md](docs/tools.md) |
 
-### Audit (6 tools)
+```json
+{
+  "mcpServers": {
+    "openLCA": {
+      "command": "python",
+      "args": ["-m", "b280_olca_mcp"],
+      "env": {
+        "OLCA_PORT": "8080",
+        "OLCA_MCP_LEGACY_TOOLS": "1"
+      }
+    }
+  }
+}
+```
 
-| Tool | Purpose |
-|---|---|
-| `extract_model` | Pull everything from a model folder for inspection |
-| `audit_model` | Structural checks: missing qrefs, zero amounts, unit mismatches |
-| `validate_system` | Mirrors openLCA's Validate button: linking, parameters, test calculation |
-| `get_system_links` | Show which providers are linked for each exchange |
-| `data_quality` | Extract pedigree matrices and uncertainty from a process |
-| `find_flow_usage` | Find the processes and impact categories that use a flow |
+### What changed underneath
 
-### Calculate (9 tools)
-
-| Tool | Purpose |
-|---|---|
-| `calculate` | Baseline impact assessment |
-| `contribution_analysis` | Process-level contribution breakdown per impact category |
-| `upstream_tree` | Multi-level contribution tree for one category, with pedigree scores on every branch |
-| `monte_carlo` | Uncertainty simulation with statistics |
-| `inventory_flows` | Raw elementary flow results (LCI level) |
-| `scenarios` | Scenario calculations from conversational parameter values |
-| `scenarios_csv` | Scenario calculations from a CSV file |
-| `sensitivity` | Parameter sensitivity analysis |
-| `sensitivity_csv` | Sensitivity analysis from a CSV file |
-
-### Meta (1 tool)
-
-| Tool | Purpose |
-|---|---|
-| `help` | Show capabilities grouped by workflow, with optional topic filter |
+Up to 1.16 the engine that talks to openLCA lived in this package and olcaBASIC depended on it. From 2.0 it is the other way round: the engine is `olcabasic.engine.Engine`, and this package depends on `olcabasic`. `from b280_olca_mcp.functions import LCAFunctions` still works and gives a deprecation warning.
 
 ## Tool annotations
 
-Every tool carries MCP tool annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) so clients can decide whether to auto-approve or prompt for confirmation. Explore and Calculate tools are read-only. Build tools signal that they modify the database. `delete_entity` is marked destructive. CSV tools are marked as writing files to disk. `chemical_synonyms` is marked as reaching an external service (PubChem).
+Every tool carries MCP tool annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) so clients can decide whether to auto-approve or prompt for confirmation. `olcabasic_help` is read-only. `olcabasic_run` can change and delete things in the database and is marked so; deletions inside a program still need `CONFIRM DELETE ON`. The legacy tools keep the annotations they had.
 
 ## Resources
 
@@ -233,16 +216,17 @@ The IPC protocol reference enables AI clients to help users connect to openLCA f
 
 ## EPD model building
 
-The server includes a guided workflow for building EN15804 EPD models from LCI data. The AI maps LCI items to lifecycle modules (A1-D), creates the folder structure, bridge processes, module processes, and product systems. Ask 'build an EPD from this LCI' to start.
+EPDs to EN 15804+A2 are olcaBASIC commands: an `EPD` block (declared unit, method, modules, programme), a `MODULE` block per information module, then `EPD SYSTEMS`, `EPD CHECK`, `EPD CALCULATE`, `EPD DATA QUALITY` and `EPD REPORT`. The module rules of the standard and, with `PROGRAMME "IES"`, the rules of the International EPD System are errors, not advice. What the assistant still does with you is decide which item of your inventory belongs in which module. Ask 'build an EPD from this LCI' to start. `olcabasic_help` with the topic `epd` shows the commands.
 
 ## Standalone scripts
 
-For repeated analyses, the server recommends standalone Python scripts that run without AI tokens. After a scenario or sensitivity calculation, it offers to generate the CSV file needed to run the equivalent script from the [openLCA-IPC-tools-python](https://github.com/Below280/openLCA-IPC-tools-python) repository.
+The reproducible artefact is the olcaBASIC program itself: `SAVE PROGRAM "model.baslca"` after a session, then `olcabasic run model.baslca` (or `RUN "model.baslca"` in a session) runs it again with no AI tokens. The Python scripts in [openLCA-IPC-tools-python](https://github.com/Below280/openLCA-IPC-tools-python) remain for scenario and sensitivity runs from CSV files.
 
 ## Related repositories
 
 | Repository | Description |
 |---|---|
+| [olcaBASIC](https://github.com/Below280/olcaBASIC) | The language this server runs, and the engine underneath it |
 | [openLCA-IPC-tools-python](https://github.com/Below280/openLCA-IPC-tools-python) | Standalone Python scripts for scenarios, sensitivity, parameters, prospective LCA |
 | [openLCA-IPC-tools-r](https://github.com/Below280/openLCA-IPC-tools-r) | R client for openLCA IPC (first R package for openLCA) |
 | [openLCA-IPC-tools-fortran](https://github.com/Below280/openLCA-IPC-tools-fortran) | Fortran IPC client and batch calculator |
