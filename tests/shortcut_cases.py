@@ -323,6 +323,14 @@ END PROCESS''',
                  "amount is 0.8 in the database and 0.9 in the block"),
         hint=('EDIT PROCESS "Widget"', 'DELETE PROCESS "Widget"')),
     Shortcut(
+        "a changed block that would make a new flow", "changed block",
+        setup=[widget() + SYSTEM],
+        program=widget(extra='  OUTPUT MAKE FLOW "Offcut", 0.2, kg\n'),
+        at='MAKE PROCESS "Widget"',
+        message=("differs from this block",
+                 'OUTPUT MAKE FLOW "Offcut" would create a flow'),
+        hint=('EDIT PROCESS "Widget"',)),
+    Shortcut(
         "a bridge block that now names another provider", "changed block",
         setup=[FOLDERS + BRIDGES],
         program=f'''BRIDGE "electricity", kWh
