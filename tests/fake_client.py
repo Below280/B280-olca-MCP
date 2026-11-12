@@ -902,6 +902,7 @@ class FakeClient:
         self.exports: list = []               # export/json-ld requests
         self.source_files: Dict[str, object] = {}
         self.shut_down = False
+        self.linking_configs: list = []       # of create_product_system
         self.mc_jitter = 0.0
         self.fail_next: Dict[str, Exception] = {}   # method name -> error
         # A calculate() result that is asked for Monte Carlo runs: the
@@ -1112,6 +1113,7 @@ class FakeClient:
         otherwise, unless linking is ONLY_DEFAULTS, to the first process
         that produces the flow."""
         self._note("create_product_system", process.id)
+        self.linking_configs.append(config)
         root = self.store["Process"].get(process.id)
         if root is None:
             raise RuntimeError(f"process {process.id} not found")
@@ -1135,6 +1137,10 @@ class FakeClient:
                 is_link = ((ex.is_input and flow.flow_type == o.FlowType.PRODUCT_FLOW)
                            or (not ex.is_input
                                and flow.flow_type == o.FlowType.WASTE_FLOW))
+                if ex.is_avoided_product:
+                    # an avoided product is linked to what would
+                    # otherwise have made it
+                    is_link = not is_link
                 if not is_link:
                     continue
                 provider_id = ex.default_provider.id if ex.default_provider else None
