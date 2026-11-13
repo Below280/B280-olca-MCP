@@ -47,6 +47,9 @@ _FORMULA_FUNCS = {
 }
 
 
+FUTURE_VERSION = "9.0.0"  # a server with the unreleased methods
+
+
 class FormulaError(Exception):
     pass
 
@@ -824,7 +827,7 @@ class FakeResult:
             return []
         return self._grouped(lambda pid: self._cost_direct.get(pid, 0.0))
 
-    # results by process tag (openLCA 2.7)
+    # results by process tag (not in a released openLCA yet)
 
     def _tag_results(self, method: str, params) -> list:
         """Direct results of the processes carrying each tag."""
@@ -1264,9 +1267,11 @@ class FakeClient:
 
     # ── raw JSON-RPC, for the methods the client does not wrap ──
 
-    SINCE = {"data/get/usage": "2.7", "result/tag-results-of-impact": "2.7",
-             "result/tag-results-of-flow": "2.7",
-             "result/tag-results-of-costs": "2.7",
+    # No released openLCA has the first four (2.7.0 does not); a test
+    # that wants them sets server_version to FUTURE_VERSION.
+    SINCE = {"data/get/usage": "9.0", "result/tag-results-of-impact": "9.0",
+             "result/tag-results-of-flow": "9.0",
+             "result/tag-results-of-costs": "9.0",
              "data/put/source-file": "2.6.2"}
 
     @staticmethod
@@ -1327,7 +1332,8 @@ class FakeClient:
         return None, f"-32601: Does not understand: {method}"
 
     def _usage_of(self, type_name, uid) -> List[o.Ref]:
-        """Where an entity is used (openLCA 2.7's data/get/usage)."""
+        """Where an entity is used (data/get/usage, not in a released
+        openLCA yet)."""
         out = []
         if type_name == "Flow":
             for proc in self.store["Process"].values():
