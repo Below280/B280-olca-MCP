@@ -101,7 +101,9 @@ created or changed, the user must press Refresh in openLCA to see it.
 
 Building an EPD: the EPD commands (olcabasic_help epd) create the
 folders, name the processes, enforce the module and programme rules,
-check data quality and biogenic carbon, and produce the results table.
+check data quality and biogenic carbon, produce the results table and
+write the EPD document (EPD DOCUMENT; ask the user for what only they
+know, never invent it).
 What they cannot do is decide which item of the user's inventory
 belongs to which module. Do that with the user first:
   A1 raw material supply, A2 transport to the factory, A3
