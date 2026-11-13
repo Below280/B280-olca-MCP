@@ -139,7 +139,7 @@ END PROCESS''')
     assert not r["ok"]
     assert "bridge" in (r["errors"][0]["message"] + r["errors"][0]["hint"]).lower()
     found = run(harness, 'FIND PROCESS "olcaBASIC MCP live shortcut"')
-    assert "olcaBASIC MCP live shortcut" not in json.dumps(found.get("data", []))
+    assert found["data"][-1]["result"]["count"] == 0
 
 
 def test_reset_does_not_get_round_the_rules(harness, model):
