@@ -78,3 +78,22 @@ class Harness:
         result = self.request("resources/read",
                               types.ReadResourceRequestParams(uri=uri))
         return result.contents[0].text
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "live: needs openLCA with its IPC server on localhost:8080 "
+        "(run with: pytest -m live)")
+    config.addinivalue_line(
+        "markers", "slow: a live test that takes several minutes")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Live tests run only when asked for with -m live."""
+    if "live" in (config.getoption("-m") or ""):
+        return
+    skip = pytest.mark.skip(reason="live test: run with pytest -m live")
+    for item in items:
+        if "live" in item.keywords:
+            item.add_marker(skip)

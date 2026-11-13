@@ -260,7 +260,7 @@ for link in s.process_links:
     if link.provider and link.provider.id == bridge.id:
         link.provider = o.Ref(id=steel.id, name=steel.name,
                               ref_type=o.RefType.Process)
-s.category = s.category or "00: Test"
+s.category = None   # openLCA files an IPC-built system in no folder
 client.put(s)
 '''
     r = run(harness, code)

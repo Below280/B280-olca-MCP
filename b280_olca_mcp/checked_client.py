@@ -102,7 +102,23 @@ class CheckedClient:
             stored = None
         if stored is None:
             return False, None
-        return True, getattr(stored, "category", None)
+        return True, self._folder_of(stored)
+
+    def _folder_of(self, entity):
+        """The folder a write is judged by. openLCA files a product
+        system built over IPC in no folder, so a system without one
+        belongs where its reference process is."""
+        category = getattr(entity, "category", None)
+        if category or type(entity).__name__ != "ProductSystem":
+            return category
+        ref = getattr(entity, "ref_process", None)
+        if ref is None:
+            return category
+        try:
+            proc = self._client.get(o.Process, ref.id)
+        except Exception:
+            proc = None
+        return getattr(proc, "category", None) if proc is not None else None
 
     def _check_folder(self, action: str, type_name: str, entity_id: str,
                       name: str, new_category: Optional[str]):
@@ -129,7 +145,7 @@ class CheckedClient:
     def put(self, entity):
         type_name = type(entity).__name__
         name = getattr(entity, "name", "") or ""
-        category = getattr(entity, "category", None)
+        category = self._folder_of(entity)
         self._check_folder("save", type_name, getattr(entity, "id", ""),
                            name, category)
         out = self._client.put(entity)
