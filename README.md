@@ -151,6 +151,8 @@ Any client that spawns a local Python process over stdin/stdout should work. Wit
 
 After creating or modifying anything, press the Refresh button in openLCA's toolbar to see changes in the GUI.
 
+**Give openLCA enough memory.** The openLCA installer sets its maximum memory to about 3.5 GB, which is not enough for a product system on ecoinvent or another large background database: openLCA runs out of memory, drops the connection and may restart itself. Set it to 10 GB or more in openLCA (File > Preferences > Configuration) and restart openLCA. If openLCA drops the connection, the tool's error says so and says what to check.
+
 ## Data security
 
 The MCP server runs locally and communicates with openLCA on localhost. The AI client (Claude Desktop or equivalent) sends tool results to its provider's servers for processing. This means process names, exchange data, parameter values, and impact results from your database will be in the conversation.
