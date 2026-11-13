@@ -68,10 +68,14 @@ RESET_DESCRIPTION = (
 
 PYTHON_DESCRIPTION = (
     "Run Python against the live session, for jobs olcaBASIC has no "
-    "command for. It skips every rule olcaBASIC enforces (bridges, exact "
-    "names, validation, stale systems, EPD and programme rules): what it "
-    "writes to the database is checked by nothing, so tell the user what "
-    "you did with it. The namespace holds: session (the olcaBASIC Session; "
+    "command for: reading and calculating are free, and the code may call "
+    "R, Fortran or any other program. Writes are checked: they are allowed "
+    "only in model folders (top folder starting '00: '), never on "
+    "background data; each one is listed in the reply; and every product "
+    "system they touch is marked out of date, so olcaBASIC refuses to "
+    "calculate it until it is built again and passes VALIDATE (the bridge "
+    "rule is checked then too). Numbers the code works out itself are not "
+    "olcaBASIC results: say so when you report them. The namespace holds: session (the olcaBASIC Session; "
     "session.run('...') works), engine (its Engine), client (its "
     "olca_ipc.Client, for raw IPC) and o (olca_schema). It shares the "
     "session's connection and lock. why_not_basic is required: name the "

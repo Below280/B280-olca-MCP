@@ -6,6 +6,11 @@ the live Session, its engine, its olca_ipc client and olca_schema (as
 "o"), under the Session lock, so it never opens a second connection or
 runs alongside an olcaBASIC program.
 
+The client is a CheckedClient (checked_client.py): reads and
+calculations are free; writes are limited to model folders ('00: ...'),
+recorded, and every product system they touch is marked out of date
+until it is built again and passes VALIDATE.
+
 Every call must say which olcaBASIC command was missing or not enough
 (why_not_basic). Calls are appended to ~/.olcabasic/python_log.jsonl;
 the reasons that repeat in that log are the commands to add to the
@@ -98,11 +103,13 @@ def run(session, code: str, why_not_basic: str) -> Dict:
         return {"ok": False, "error": "No code was given."}
 
     import olca_schema as o
+    from .checked_client import CheckedClient, CheckedSession, settle
+    checked = CheckedClient(session.client)
     namespace = {
         "__name__": "__python_exec__",
-        "session": session,
+        "session": CheckedSession(session, checked),
         "engine": session.engine,
-        "client": session.client,
+        "client": checked,
         "o": o,
     }
     out = io.StringIO()
@@ -112,12 +119,22 @@ def run(session, code: str, why_not_basic: str) -> Dict:
 
     def worker():
         with session.lock:
+            engine = session.engine
+            raw = engine.client
+            engine.client = checked    # engine methods write through it too
             try:
                 _execute(code, namespace, out)
                 outcome["ok"] = True
             except BaseException:
                 outcome["ok"] = False
                 outcome["error"] = traceback.format_exc()
+            finally:
+                engine.client = raw
+                try:
+                    outcome["settled"] = settle(session, checked.writes)
+                except Exception as ex:   # never lose the result over this
+                    outcome["settled"] = {"systems": [], "notes": [
+                        f"Could not mark the changed systems: {ex}"]}
 
     thread = threading.Thread(target=worker, name="python_exec", daemon=True)
     thread.start()
@@ -144,8 +161,22 @@ def run(session, code: str, why_not_basic: str) -> Dict:
         if not result["ok"]:
             result["error"] = outcome.get("error", "unknown error")
 
+    result["writes"] = list(checked.writes)
+    settled = outcome.get("settled") or {"systems": [], "notes": []}
+    result["systems_out_of_date"] = settled["systems"]
+    if settled["notes"]:
+        result["notes"] = settled["notes"]
+    result["checked_by_olcabasic"] = False
+    result["about_the_output"] = (
+        "Anything this code calculated itself is not an olcaBASIC result "
+        "and has not been through its checks. Say so if you report it. "
+        "Results to rely on come from olcabasic_run (CALCULATE and the "
+        "rest), which refuses a system changed here until it is built "
+        "again and passes VALIDATE.")
+
     _log({
         "time": datetime.datetime.now().isoformat(timespec="seconds"),
+        "writes": len(checked.writes),
         "why_not_basic": reason,
         "code": code,
         "ok": result["ok"],

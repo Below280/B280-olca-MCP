@@ -53,7 +53,8 @@ def test_refused_without_why_not_basic(harness, client, why):
 def test_namespace(harness, client):
     r = run(harness, "print(type(session).__name__, type(engine).__name__, "
                      "client is session.client, o.__name__)")
-    assert r["ok"] and r["output"].strip() == "Session Engine True olca_schema"
+    assert r["ok"] and r["output"].strip() == (
+        "CheckedSession Engine True olca_schema")
 
 
 def test_last_expression_is_shown(harness):
@@ -99,7 +100,8 @@ def test_every_call_is_logged(harness):
     assert lines[0]["why_not_basic"] == "FIND has no flow property search"
     assert lines[0]["code"] == "print('one')" and lines[0]["ok"] is True
     assert lines[1]["ok"] is False
-    assert set(lines[0]) == {"time", "why_not_basic", "code", "ok", "seconds"}
+    assert set(lines[0]) == {"time", "why_not_basic", "code", "ok", "seconds",
+                             "writes"}
 
 
 def test_default_log_is_in_the_home_folder(monkeypatch):
@@ -147,3 +149,123 @@ def test_stdout_is_captured_not_printed(harness, capsys):
     run(harness, "import sys\nprint('to stdout')\nprint('to stderr', file=sys.stderr)")
     captured = capsys.readouterr()
     assert "to stdout" not in captured.out and "to stderr" not in captured.err
+
+
+# ── free, but checked ────────────────────────────────────────
+
+from shortcut_cases import B_STEEL, CALC, SYSTEM, widget   # noqa: E402
+from fake_client import STEEL                                # noqa: E402
+
+WIDGET_SYSTEM = widget() + SYSTEM
+
+
+def _built(harness):
+    r = harness.call("olcabasic_run", {"code": WIDGET_SYSTEM})
+    assert r["ok"], r
+
+
+def test_every_result_says_it_is_not_an_olcabasic_result(harness):
+    r = run(harness, "1 + 1")
+    assert r["checked_by_olcabasic"] is False
+    assert "not an olcaBASIC result" in r["about_the_output"]
+    assert r["writes"] == [] and r["systems_out_of_date"] == []
+
+
+def test_a_write_in_a_model_folder_is_made_and_recorded(harness, client):
+    r = run(harness, "client.put(o.Actor(id='a1', name='Lab', "
+                     "category='00: Test'))")
+    assert r["ok"], r
+    assert client.by_name(o.Actor, "Lab")
+    assert r["writes"] == [{"action": "save", "type": "Actor", "id": "a1",
+                            "name": "Lab", "folder": "00: Test"}]
+
+
+def test_background_data_is_not_edited(harness, client):
+    steel = client.by_name(o.Process, STEEL)[0]
+    before = steel.to_dict()
+    r = run(harness, f"p = client.get(o.Process, '{steel.id}')\n"
+                     "p.description = 'changed'\nclient.put(p)")
+    assert not r["ok"] and "WriteRefused" in r["error"]
+    assert "not in a model folder" in r["error"]
+    assert client.by_name(o.Process, STEEL)[0].to_dict() == before
+    assert r["writes"] == []
+
+
+def test_a_new_entity_outside_a_model_folder_is_refused(harness, client):
+    r = run(harness, "client.put(o.Actor(name='Loose'))")
+    assert not r["ok"] and "writes only in model folders" in r["error"]
+    assert client.by_name(o.Actor, "Loose") == []
+
+
+def test_background_data_is_not_deleted(harness, client):
+    steel = client.by_name(o.Process, STEEL)[0]
+    r = run(harness, f"client.delete(o.Ref(id='{steel.id}', "
+                     "ref_type=o.RefType.Process))")
+    assert not r["ok"] and "WriteRefused" in r["error"]
+    assert client.by_name(o.Process, STEEL)
+
+
+def test_raw_json_rpc_writes_are_checked_too(harness, client):
+    steel = client.by_name(o.Process, STEEL)[0]
+    r = run(harness, f"client.rpc_call('data/delete', {{'@type': 'Process', "
+                     f"'@id': '{steel.id}'}})")
+    assert not r["ok"] and "WriteRefused" in r["error"]
+    r = run(harness, "client.rpc_call('runtime/shutdown', {})")
+    assert not r["ok"] and "not open to the Python route" in r["error"]
+
+
+def test_engine_writes_go_through_the_check(harness, client):
+    r = run(harness, "engine.client.put(o.Actor(name='Via engine'))")
+    assert not r["ok"] and "writes only in model folders" in r["error"]
+    # the engine has its own client back afterwards
+    assert type(harness.server.session.engine.client).__name__ != \
+        "CheckedClient"
+
+
+def test_session_run_inside_python_is_not_recorded_again(harness, client):
+    r = run(harness, "r = session.run('MAKE ACTOR \"Inside\"\\nEND ACTOR')\n"
+                     "print(r.ok)")
+    assert r["ok"] and r["output"].strip() == "True", r
+    assert r["writes"] == []
+
+
+def test_a_process_changed_from_python_makes_its_system_out_of_date(
+        harness, client):
+    _built(harness)
+    assert harness.call("olcabasic_run", {"code": CALC})["ok"]
+    widget = client.by_name(o.Process, "Widget")[0]
+    r = run(harness, f"p = client.get(o.Process, '{widget.id}')\n"
+                     "p.exchanges[1].amount = 9\nclient.put(p)")
+    assert r["ok"], r
+    assert r["systems_out_of_date"] == ["Widget"]
+    assert any("out of date" in n for n in r.get("notes", []))
+    r = harness.call("olcabasic_run", {"code": CALC})
+    assert not r["ok"]
+    assert "out of date" in r["errors"][0]["message"]
+
+
+def test_python_cannot_link_past_a_bridge(harness, client):
+    """The case the bridge rule exists for: a direct link to the
+    background, made from Python, is refused at CALCULATE."""
+    _built(harness)
+    code = f'''
+system = next(d for d in client.get_descriptors(o.ProductSystem)
+              if d.name == "Widget")
+s = client.get(o.ProductSystem, system.id)
+bridge = next(d for d in client.get_descriptors(o.Process)
+              if d.name == "{B_STEEL}")
+steel = next(d for d in client.get_descriptors(o.Process)
+             if d.name == "{STEEL}")
+for link in s.process_links:
+    if link.provider and link.provider.id == bridge.id:
+        link.provider = o.Ref(id=steel.id, name=steel.name,
+                              ref_type=o.RefType.Process)
+s.category = s.category or "00: Test"
+client.put(s)
+'''
+    r = run(harness, code)
+    assert r["ok"], r
+    assert "Widget" in r["systems_out_of_date"]
+    r = harness.call("olcabasic_run", {"code": CALC})
+    assert not r["ok"]
+    assert "no bridge" in r["errors"][0]["message"]

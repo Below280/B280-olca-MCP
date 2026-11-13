@@ -23,7 +23,7 @@ The server starts without openLCA. The first call that needs it connects, and sa
 ## Two flags, both off by default
 
 - `OLCA_MCP_LEGACY_TOOLS=1` brings back the 36 typed tools of version 1. They call the engine directly and skip every rule the language enforces; each tool's description now starts by saying so.
-- `OLCA_MCP_ALLOW_PYTHON=1` adds `python_exec`, for what olcaBASIC cannot express. It skips every rule too, and its description says so. It runs Python in the server process with `session`, `engine` and `client` in scope, under the same lock, with a time limit. Every call must give a `why_not_basic` reason and is logged to `~/.olcabasic/python_log.jsonl`.
+- `OLCA_MCP_ALLOW_PYTHON=1` adds `python_exec`, for what olcaBASIC cannot express. Reading and calculating are free, and the code can call R, Fortran or any other program. Its writes are checked: only in model folders (top folder starting `00: `), never on background data, each listed in the reply, and every product system they touch is marked out of date until it is built again and passes `VALIDATE`. Numbers the code works out itself are labelled as not olcaBASIC results. It runs Python in the server process with `session`, `engine` and `client` in scope, under the same lock, with a time limit. Every call must give a `why_not_basic` reason and is logged to `~/.olcabasic/python_log.jsonl`.
 
 ## Behaviour changes
 

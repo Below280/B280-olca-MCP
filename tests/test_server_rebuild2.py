@@ -224,11 +224,12 @@ def test_the_run_description_says_which_commands_need_the_terminal(harness):
 
 # ── tools that skip the rules say so ─────────────────────────
 
-def test_python_exec_says_it_skips_every_rule(client, monkeypatch):
+def test_python_exec_says_how_its_writes_are_checked(client, monkeypatch):
     monkeypatch.setenv("OLCA_MCP_ALLOW_PYTHON", "1")
     tools = Harness(make_server(client)).list_tools()
-    assert "skips every rule olcaBASIC enforces" in \
-        tools["python_exec"].description
+    text = tools["python_exec"].description
+    assert "Writes are checked" in text and "model folders" in text
+    assert "not olcaBASIC results" in text
 
 
 def test_every_v1_tool_says_it_skips_every_rule(client, monkeypatch):
@@ -249,4 +250,5 @@ def test_both_stay_off_by_default(harness):
     assert set(harness.list_tools()) == {
         "olcabasic_run", "olcabasic_help", "olcabasic_reset"}
     text = harness.read_resource("lca://knowledge/instructions")
-    assert "They skip every rule above" in text
+    assert "The v1 tools skip the rules" in text
+    assert "not olcaBASIC results" in text
