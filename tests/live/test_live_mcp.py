@@ -28,17 +28,18 @@ BRIDGE_SHORT = "olcaBASIC MCP live electricity"
 BRIDGE = f"BRIDGE | {BRIDGE_SHORT} | kWh"
 
 
-def _baseline():
+def _baselines():
     env = os.getenv("OLCA_LIVE_BASELINE")
     paths = [Path(env)] if env else []
     for parent in Path(__file__).resolve().parents:
         paths += [parent / "REBUILD_PLAN" / "live_baseline.json"]
         paths += sorted((parent / "REBUILD_PLAN_2").glob("live_baseline_*.json")) \
             if (parent / "REBUILD_PLAN_2").is_dir() else []
-    for path in paths:
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
-    pytest.skip("no live baseline: set OLCA_LIVE_BASELINE")
+    found = [json.loads(p.read_text(encoding="utf-8"))
+             for p in paths if p.exists()]
+    if not found:
+        pytest.skip("no live baseline: set OLCA_LIVE_BASELINE")
+    return found
 
 
 @pytest.fixture(scope="module")
@@ -60,12 +61,18 @@ def harness():
 
 @pytest.fixture(scope="module")
 def model(harness):
-    data = _baseline()
-    m = re.search(r'USE PROCESS "([^"]+)".*kWh LOCATION "([^"]+)"',
-                  data["program_template"])
-    if not m:
-        pytest.skip("the baseline program has no electricity input")
-    provider, location = m.groups()
+    # the baseline of the database that is open: its provider is there
+    for data in _baselines():
+        m = re.search(r'USE PROCESS "([^"]+)".*kWh LOCATION "([^"]+)"',
+                      data["program_template"])
+        if not m:
+            continue
+        provider, location = m.groups()
+        hit = run(harness, f'FIND PROCESS "{provider}" LOCATION "{location}"')
+        if hit["ok"] and hit["data"][-1]["result"].get("count"):
+            break
+    else:
+        pytest.skip("no live baseline fits the database that is open")
     method = next(iter(data["calculate"]))
     cleanup = (f'CLOSE RESULT ALL\nCONFIRM DELETE ON\n'
                f'DELETE SYSTEM "{NAME}"\nDELETE PROCESS "{NAME}"')
