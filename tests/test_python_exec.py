@@ -269,3 +269,33 @@ client.put(s)
     r = harness.call("olcabasic_run", {"code": CALC})
     assert not r["ok"]
     assert "no bridge" in r["errors"][0]["message"]
+
+
+# ── a loop that never ends, and printing from other threads ──
+
+def test_a_loop_that_never_ends_is_stopped_and_frees_the_session(
+        harness, monkeypatch):
+    monkeypatch.setenv("OLCA_MCP_PYTHON_TIMEOUT", "1")
+    r = run(harness, "while True:\n    try:\n        pass\n    except "
+                     "Exception:\n        pass")
+    assert not r["ok"] and r["timed_out"]
+    assert "Stopped after 1 seconds" in r["error"]
+    assert harness.call("olcabasic_run", {"code": "PRINT 41 + 1"})["ok"]
+
+
+def test_only_the_codes_own_printing_is_captured(harness):
+    import io
+    import sys
+    import threading
+    seen = io.StringIO()
+    old = sys.stdout
+    sys.stdout = seen
+    try:
+        r = run(harness, "import threading, time\n"
+                         "print('mine')\n"
+                         "t = threading.Thread(target=lambda: print('other'))\n"
+                         "t.start(); t.join()\n'done'")
+    finally:
+        sys.stdout = old
+    assert r["ok"] and "mine" in r["output"]
+    assert "other" not in r["output"] and "other" in seen.getvalue()

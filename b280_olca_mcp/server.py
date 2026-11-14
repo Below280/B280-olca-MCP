@@ -216,6 +216,18 @@ class OpenLCAMCPServer:
     def call_tool(self, name: str, arguments: dict) -> str:
         """Run a tool and return the text of its reply."""
         arguments = arguments or {}
+        if not isinstance(arguments, dict):
+            return json.dumps({"error": "The tool's arguments are an object "
+                                        "of named values."})
+        for key in ("code", "topic", "why_not_basic"):
+            value = arguments.get(key)
+            if value is not None and not isinstance(value, str):
+                return json.dumps({
+                    "ok": False,
+                    "error": f"'{key}' is text, not "
+                             f"{type(value).__name__}.",
+                    "hint": f"Pass {key} as one string; a program's lines "
+                            f"are separated by newlines."})
         if name == "olcabasic_help":
             return self._help(arguments.get("topic") or "")
         if self.session is None:
@@ -249,7 +261,10 @@ class OpenLCAMCPServer:
             return (f"'{name}' is a v1 tool. Use olcabasic_run (see "
                     f"olcabasic_help), or set OLCA_MCP_LEGACY_TOOLS=1 for "
                     f"the server to get the v1 tools back.")
-        return "The tools are olcabasic_run, olcabasic_help and olcabasic_reset."
+        tools = ["olcabasic_run", "olcabasic_help", "olcabasic_reset"]
+        if self.allow_python:
+            tools.append("python_exec")
+        return f"The tools are {', '.join(tools[:-1])} and {tools[-1]}."
 
     def _run(self, code: str, dry_run: bool) -> str:
         if not (code or "").strip():

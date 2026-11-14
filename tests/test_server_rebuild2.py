@@ -252,3 +252,19 @@ def test_both_stay_off_by_default(harness):
     text = harness.read_resource("lca://knowledge/instructions")
     assert "The v1 tools skip the rules" in text
     assert "not olcaBASIC results" in text
+
+
+@pytest.mark.parametrize("args, words", [
+    ({"code": 123}, "'code' is text, not int"),
+    ({"code": ["PRINT 1"]}, "'code' is text, not list"),
+])
+def test_arguments_of_the_wrong_kind(client, args, words):
+    h = Harness(make_server(client))
+    assert words in h.call_text("olcabasic_run", args)
+
+
+def test_the_unknown_tool_hint_names_python_exec_when_it_is_on(
+        client, monkeypatch):
+    monkeypatch.setenv("OLCA_MCP_ALLOW_PYTHON", "1")
+    h = Harness(make_server(client))
+    assert "and python_exec" in h.call_text("nope", {})

@@ -18,6 +18,7 @@ language next.
 """
 
 import ast
+import sys
 import contextlib
 import datetime
 import io
@@ -70,12 +71,59 @@ def _truncate(text: str) -> tuple:
             + f"\n... [output truncated: {cut} more characters]"), True
 
 
-def _execute(code: str, namespace: Dict, out: io.StringIO) -> None:
+class _ThisThread:
+    """sys.stdout (or stderr) while code runs: what this thread prints
+    goes to the captured output; every other thread of the server keeps
+    printing where it did."""
+
+    def __init__(self, original, captured, thread):
+        self._original = original
+        self._captured = captured
+        self._thread = thread
+
+    def _target(self):
+        return (self._captured if threading.current_thread() is self._thread
+                else self._original)
+
+    def write(self, text):
+        return self._target().write(text)
+
+    def flush(self):
+        return self._target().flush()
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
+class _Stopped(BaseException):
+    """Raised inside the code when its time is up."""
+
+
+def _deadline_tracer(deadline: float):
+    """A trace function that stops pure-Python code at the deadline, so a
+    loop that never ends cannot hold the session for ever. (A call that
+    waits inside C, such as a long sleep, is only stopped when it
+    returns.)"""
+    def tracer(frame, event, arg):
+        if time.monotonic() > deadline:
+            raise _Stopped("time limit reached")
+        return tracer
+    return tracer
+
+
+def _execute(code: str, namespace: Dict, out: io.StringIO,
+             deadline: float = 0.0) -> None:
     """Run the code. If its last statement is an expression, print its
     value, as an interactive Python prompt would."""
     tree = ast.parse(code, "<python_exec>", "exec")
     last = tree.body[-1] if tree.body else None
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+    me = threading.current_thread()
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout = _ThisThread(old_out, out, me)
+    sys.stderr = _ThisThread(old_err, out, me)
+    if deadline:
+        sys.settrace(_deadline_tracer(deadline))
+    try:
         if isinstance(last, ast.Expr):
             body = ast.Module(body=tree.body[:-1], type_ignores=[])
             exec(compile(body, "<python_exec>", "exec"), namespace)
@@ -85,6 +133,9 @@ def _execute(code: str, namespace: Dict, out: io.StringIO) -> None:
                 print(repr(value))
         else:
             exec(compile(tree, "<python_exec>", "exec"), namespace)
+    finally:
+        sys.settrace(None)
+        sys.stdout, sys.stderr = old_out, old_err
 
 
 def run(session, code: str, why_not_basic: str) -> Dict:
@@ -123,7 +174,8 @@ def run(session, code: str, why_not_basic: str) -> Dict:
             raw = engine.client
             engine.client = checked    # engine methods write through it too
             try:
-                _execute(code, namespace, out)
+                _execute(code, namespace, out,
+                         deadline=time.monotonic() + limit)
                 outcome["ok"] = True
             except BaseException:
                 outcome["ok"] = False
@@ -138,7 +190,7 @@ def run(session, code: str, why_not_basic: str) -> Dict:
 
     thread = threading.Thread(target=worker, name="python_exec", daemon=True)
     thread.start()
-    thread.join(limit)
+    thread.join(limit + 0.5)    # the tracer stops Python code at the limit
     seconds = round(time.time() - started, 3)
 
     if thread.is_alive():
@@ -159,7 +211,12 @@ def run(session, code: str, why_not_basic: str) -> Dict:
         result = {"ok": bool(outcome.get("ok")), "output": output,
                   "truncated": truncated, "seconds": seconds}
         if not result["ok"]:
-            result["error"] = outcome.get("error", "unknown error")
+            error = outcome.get("error", "unknown error")
+            if "_Stopped: time limit reached" in error:
+                error = (f"Stopped after {limit:g} seconds, the time limit. "
+                         f"Set OLCA_MCP_PYTHON_TIMEOUT for a longer one.")
+                result["timed_out"] = True
+            result["error"] = error
 
     result["writes"] = list(checked.writes)
     settled = outcome.get("settled") or {"systems": [], "notes": []}
