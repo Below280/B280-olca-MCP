@@ -138,7 +138,9 @@ PYTHON AND THE V1 TOOLS
 python_exec and the v1 tools exist only if the user has switched them
 on. python_exec writes only in model folders, lists its writes, and
 marks every system it touched out of date until it is rebuilt and
-passes VALIDATE. Numbers it works out itself are not olcaBASIC results:
+passes VALIDATE. It reaches openLCA only through `client`: code that
+opens its own connection or reaches inside client, session or engine
+(names starting with _) is refused. Numbers it works out itself are not olcaBASIC results:
 say so. The v1 tools skip the rules. Use python_exec only when olcaBASIC
 has no command for the job and say which in why_not_basic.
 

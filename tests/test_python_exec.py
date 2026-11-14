@@ -299,3 +299,32 @@ def test_only_the_codes_own_printing_is_captured(harness):
         sys.stdout = old
     assert r["ok"] and "mine" in r["output"]
     assert "other" not in r["output"] and "other" in seen.getvalue()
+
+
+# ── the ways round the checked client that need no effort ────
+
+@pytest.mark.parametrize("code, words", [
+    ("client._client.put(o.Actor(name='x'))", "uses ._client"),
+    ("session._session.client", "uses ._session"),
+    ("import olca_ipc as ipc\nipc.Client(8080)", "imports olca_ipc"),
+    ("from olca_ipc import Client", "imports olca_ipc"),
+    ("getattr(client, '_cl' + 'ient')", "uses getattr()"),
+    ("vars(client)", "uses vars()"),
+    ("client.__dict__", "uses .__dict__"),
+    ("import requests\nrequests.post('http://localhost:8080')",
+     "names the address 'localhost'"),
+    ("import gc\ngc.get_referrers(client)", "imports gc"),
+])
+def test_ways_round_the_checks_are_refused_before_running(harness, code,
+                                                          words):
+    r = run(harness, code)
+    assert not r["ok"] and r["refused"], r
+    assert words in r["error"]
+    assert log_lines()[-1]["refused"]
+
+
+def test_ordinary_code_is_not_caught_by_the_scan(harness):
+    r = run(harness, "import subprocess, json, math\n"
+                     "d = {'a': 1}\nprint(__name__, json.dumps(d), "
+                     "math.sqrt(4))")
+    assert r["ok"], r

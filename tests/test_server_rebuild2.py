@@ -277,3 +277,16 @@ def test_a_lone_surrogate_in_the_code_does_not_break_the_reply(client):
     reply = server.call_tool("olcabasic_run", {"code": 'PRINT "a\ud800b"'})
     reply.encode("utf-8")                       # does not raise
     assert _json.loads(reply)["ok"]
+
+
+def test_olcabasic_run_has_a_time_limit(client, monkeypatch):
+    import json as _json
+    from conftest import make_server
+    from b280_olca_mcp import server as srv
+    assert srv.run_timeout() == 3600
+    monkeypatch.setenv("OLCA_MCP_RUN_TIMEOUT", "0.05")
+    reply = _json.loads(make_server(client).call_tool(
+        "olcabasic_run",
+        {"code": "LET i = 0\nWHILE i < 900000\n  LET i = i + 1\nWEND"}))
+    assert not reply["ok"]
+    assert "past its time limit" in reply["errors"][0]["message"]

@@ -138,6 +138,54 @@ def _execute(code: str, namespace: Dict, out: io.StringIO,
         sys.stdout, sys.stderr = old_out, old_err
 
 
+# What the code may not name. Python in this process can always find a
+# way to the unchecked connection if it sets out to; these close the
+# ways that need no deliberate effort, so going round the checks can
+# only be done on purpose, and the log shows the code that did it.
+_BLOCKED_MODULES = {"olca_ipc", "ctypes", "gc"}
+_BLOCKED_CALLS = {"getattr", "setattr", "delattr", "vars", "globals",
+                  "locals", "eval", "exec", "compile", "__import__",
+                  "breakpoint"}
+_ALLOWED_DUNDERS = {"__name__", "__doc__"}
+_ADDRESSES = ("localhost", "127.0.0.1", "0.0.0.0", "[::1]", ":8080")
+
+
+def going_round(code: str):
+    """None, or the reason the code is refused before it runs."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None                 # the run reports the syntax error
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = ([a.name for a in node.names]
+                     if isinstance(node, ast.Import) else [node.module or ""])
+            for name in names:
+                if name.split(".")[0] in _BLOCKED_MODULES:
+                    return (f"imports {name}. python_exec reaches openLCA "
+                            f"only through `client`, which checks every "
+                            f"write; a second connection would not be "
+                            f"checked.")
+        elif isinstance(node, ast.Attribute):
+            attr = node.attr
+            if attr.startswith("_") and attr not in _ALLOWED_DUNDERS:
+                return (f"uses .{attr}. Names starting with _ are the "
+                        f"inside of client, session and engine, and lead "
+                        f"to the connection without the checks.")
+        elif isinstance(node, ast.Name) and node.id in _BLOCKED_CALLS:
+            return (f"uses {node.id}(), which can reach names the checks "
+                    f"keep out of the way. Write the attribute out "
+                    f"instead (client.get(...), not getattr).")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            low = node.value.lower()
+            for address in _ADDRESSES:
+                if address in low:
+                    return (f"names the address '{address}'. openLCA is "
+                            f"reached only through `client`, which checks "
+                            f"every write.")
+    return None
+
+
 def run(session, code: str, why_not_basic: str) -> Dict:
     """Run Python code against the Session. Returns a dictionary:
     ok, output, error (a traceback, if it failed), truncated, seconds."""
@@ -152,6 +200,15 @@ def run(session, code: str, why_not_basic: str) -> Dict:
         }
     if not (code or "").strip():
         return {"ok": False, "error": "No code was given."}
+    why = going_round(code)
+    if why:
+        _log({"time": datetime.datetime.now().isoformat(timespec="seconds"),
+              "why_not_basic": reason, "code": code, "ok": False,
+              "seconds": 0, "writes": 0, "refused": why})
+        return {"ok": False, "refused": True,
+                "error": f"Refused before it ran: the code {why} If an "
+                         f"olcaBASIC command is missing, say so in "
+                         f"why_not_basic and do the rest with `client`."}
 
     import olca_schema as o
     from .checked_client import CheckedClient, CheckedSession, settle

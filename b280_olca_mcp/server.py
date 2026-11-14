@@ -90,6 +90,21 @@ def _flag(name: str) -> bool:
     return os.getenv(name) == "1"
 
 
+
+DEFAULT_RUN_TIMEOUT = 3600
+
+
+def run_timeout() -> float:
+    """Seconds an olcabasic_run program may run before the next line is
+    refused (OLCA_MCP_RUN_TIMEOUT, default an hour). Without it, a
+    program that never ends would hold the session for good."""
+    try:
+        value = float(os.getenv("OLCA_MCP_RUN_TIMEOUT", DEFAULT_RUN_TIMEOUT))
+    except ValueError:
+        return float(DEFAULT_RUN_TIMEOUT)
+    return value if value > 0 else float(DEFAULT_RUN_TIMEOUT)
+
+
 class OpenLCAMCPServer:
 
     def __init__(self, session: Session = None):
@@ -279,7 +294,8 @@ class OpenLCAMCPServer:
                             "hint": "Pass olcaBASIC code in 'code'. "
                                     "olcabasic_help lists the commands."}],
             }, indent=1)
-        result = self.session.run(code, dry_run=dry_run).to_dict()
+        result = self.session.run(code, dry_run=dry_run,
+                                  time_limit=run_timeout()).to_dict()
         text = json.dumps(result, indent=1, default=str)
         if len(text) > MAX_REPLY_CHARS:
             # First shorten the long tables (RESULT queries can return
