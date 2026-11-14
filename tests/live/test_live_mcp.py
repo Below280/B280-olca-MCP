@@ -68,7 +68,7 @@ def model(harness):
         if not m:
             continue
         provider, location = m.groups()
-        hit = run(harness, f'FIND PROCESS "{provider}" LOCATION "{location}"')
+        hit = run(harness, f'FIND PROCESS "{provider}" AT "{location}"')
         if hit["ok"] and hit["data"][-1]["result"].get("count"):
             break
     else:
