@@ -22,15 +22,15 @@ This installs the server and its dependencies in one step: `mcp` and `olcabasic`
 
 ### Development setup (GitHub)
 
-Clone the repository for the latest code, the React dashboard, or if you want to modify the server:
+Clone the repository for the latest code, the React dashboard, or if you want to modify the server. The server needs olcaBASIC 0.4, so clone both and install them in place:
 
 ```
+git clone https://github.com/Below280/olcaBASIC.git
 git clone https://github.com/Below280/B280-olca-MCP.git
-cd B280-olca-MCP
-pip install -r requirements.txt
+pip install -e olcaBASIC -e B280-olca-MCP
 ```
 
-The server entry point is `b280_olca_mcp/server.py`.
+Then run it as `python -m b280_olca_mcp`, as with PyPI. Running `b280_olca_mcp/server.py` as a script does not work: it is part of a package.
 
 ## What it does
 
@@ -75,21 +75,9 @@ If you installed via PyPI:
 }
 ```
 
-If you cloned from GitHub:
+The same entry works after the GitHub setup above (`pip install -e`).
 
-```json
-{
-  "mcpServers": {
-    "openLCA": {
-      "command": "python",
-      "args": ["C:/path/to/B280-olca-MCP/b280_olca_mcp/server.py"],
-      "env": {
-        "OLCA_PORT": "8080"
-      }
-    }
-  }
-}
-```
+Have one openLCA MCP server in the configuration, not two. With an older version (or another openLCA server) installed beside this one, an assistant can use that one and skip every rule described below.
 
 On Windows, if Claude Desktop cannot find Python, use the full path to your Python executable.
 
@@ -97,7 +85,7 @@ Restart Claude Desktop after saving.
 
 ### Cursor
 
-Go to Settings > Tools & MCP > Add MCP Server. Choose stdio transport, set the command to `python` and the argument to `-m b280_olca_mcp` (PyPI) or the path to `b280_olca_mcp/server.py` (GitHub clone). Cursor picks up config changes without restarting.
+Go to Settings > Tools & MCP > Add MCP Server. Choose stdio transport, set the command to `python` and the argument to `-m b280_olca_mcp`. Cursor picks up config changes without restarting.
 
 ### VS Code
 
@@ -138,7 +126,7 @@ ChatGPT support is currently experimental. A remote Streamable HTTP transport op
 
 ### Other MCP clients
 
-Any client that spawns a local Python process over stdin/stdout should work. With PyPI: `python -m b280_olca_mcp`. With GitHub clone: `python path/to/b280_olca_mcp/server.py`.
+Any client that spawns a local Python process over stdin/stdout should work. The command is `python -m b280_olca_mcp`.
 
 > **Beta software.** This server is under active development. Test it on a copy of your database before connecting a production database. Report issues on [GitHub](https://github.com/Below280/B280-olca-MCP/issues) or at mcp-feedback@below280.com.
 
@@ -177,20 +165,22 @@ The server starts whether or not openLCA is running. The first call that needs o
 
 The language refuses anything that would build or calculate a wrong model, and an assistant cannot talk it out of a refusal. Each of these comes back as an error with the line and what to type instead:
 
-- a background process used without a bridge;
+- a background process used without a bridge, directly or through a flow only background processes make, and a bridge in a unit its provider cannot be measured in;
+- changing, moving or deleting background data (anything in a folder named with an ISIC or NAICS code, as ecoinvent and the US databases file theirs), and deleting a process or flow that is still used;
 - a name that could mean several processes or flows, and a method name that is not the full name;
 - a `MAKE PROCESS` block run again after it was changed;
 - a calculation on a product system that is out of date (one of its processes was edited, linked, moved or parameterised, or its links no longer match its processes) or that failed `VALIDATE`. `olcabasic_reset` and a new session do not get round either: the links are compared with the database every time, and a system not checked in the session is checked before it is calculated;
 - an output that would create a flow by accident, a new emission that the method has no factor for, Monte Carlo with nothing uncertain, allocation without factors;
+- an amount that openLCA would work out differently from olcaBASIC once it is a formula (olcaBASIC writes `SQR`, `LOG` and `INT` in openLCA's terms, and refuses comparisons and the like);
 - in an EPD: a module using another module's process, and any broken rule of the programme.
 
 Three kinds of command ask a person a question, and only run in the olcaBASIC terminal: `PARAMETERISE ... ALL`, changing an impact method olcaBASIC did not make, and `SHUTDOWN SERVER`. Through the MCP they are refused with a hint that says so.
 
-`tests/test_shortcuts.py` plays an assistant cutting corners: 27 programs, each trying one way round a rule, each refused with the database unchanged.
+`tests/test_shortcuts.py` plays an assistant cutting corners: 27 programs, each trying one way round a rule, each refused with the database unchanged. `tools/agent_test` puts a real Claude in front of the server with tasks that tempt it to cut corners (skip the bridges, edit ecoinvent, estimate a number that would not calculate) and reads what it did; its first run found five faults, all fixed in 2.0.0 and olcaBASIC 0.4.0.
 
-### Two flags
+### Settings
 
-Both are off by default and are set as environment variables in the MCP client's configuration.
+Set as environment variables in the MCP client's configuration. The two flags are off by default.
 
 | Variable | Effect |
 |---|---|
@@ -206,7 +196,7 @@ Both are off by default and are set as environment variables in the MCP client's
       "args": ["-m", "b280_olca_mcp"],
       "env": {
         "OLCA_PORT": "8080",
-        "OLCA_MCP_LEGACY_TOOLS": "1"
+        "OLCA_MCP_RUN_TIMEOUT": "7200"
       }
     }
   }
@@ -228,7 +218,7 @@ The server exposes four MCP resources that AI clients can read on demand:
 | Resource | URI | Purpose |
 |---|---|---|
 | Database info | `lca://database/info` | Live database overview |
-| Assistant instructions | `lca://knowledge/instructions` | How to work with the user: when to ask, how to present results, how to check a model (144 lines; the rules are in the language) |
+| Assistant instructions | `lca://knowledge/instructions` | How to work with the user: when to ask, how to present results, how to check a model (165 lines; the rules are in the language) |
 | IPC protocol reference | `lca://knowledge/ipc-protocol` | JSON-RPC reference for the 60 IPC methods of the olca-ipc client |
 | openLCA resources | `lca://knowledge/openlca-resources` | Links to databases, docs, forums, and training |
 
@@ -236,7 +226,7 @@ The IPC protocol reference enables AI clients to help users connect to openLCA f
 
 ## EPD model building
 
-EPDs to EN 15804+A2 are olcaBASIC commands: an `EPD` block (declared unit, method, modules, programme), a `MODULE` block per information module, then `EPD SYSTEMS`, `EPD CHECK`, `EPD CALCULATE`, `EPD DATA QUALITY`, `EPD REPORT` and `EPD SAVE` (which writes the EPD into openLCA as its own EPD entity). `RATING` lines record how well each dataset represents geography, technology and time; `EPD SENSITIVITY` varies groups of parameters; `EPD EXPORT MODEL` writes the model out for a verifier. The module rules of the standard and, with `PROGRAMME "IES"`, the rules of the International EPD System are errors, not advice. What the assistant still does with you is decide which item of your inventory belongs in which module. Ask 'build an EPD from this LCI' to start. `olcabasic_help` with the topic `epd` shows the commands.
+EPDs to EN 15804+A2 are olcaBASIC commands: an `EPD` block (declared unit, method, modules, programme), a `MODULE` block per information module, then `EPD SYSTEMS`, `EPD CHECK`, `EPD CALCULATE`, `EPD DATA QUALITY`, `EPD REPORT`, `EPD SAVE` (which writes the EPD into openLCA as its own EPD entity) and `EPD DOCUMENT` (the EPD itself as a Word or Markdown draft, in the sections of the International EPD System). `RATING` lines record how well each dataset represents geography, technology and time; `EPD SENSITIVITY` varies groups of parameters; `EPD EXPORT MODEL` writes the model out for a verifier. The module rules of the standard and, with `PROGRAMME "IES"`, the rules of the International EPD System are errors, not advice. What the assistant still does with you is decide which item of your inventory belongs in which module. Ask 'build an EPD from this LCI' to start. `olcabasic_help` with the topic `epd` shows the commands.
 
 ## Standalone scripts
 
