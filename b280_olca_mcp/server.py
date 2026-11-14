@@ -228,6 +228,11 @@ class OpenLCAMCPServer:
                              f"{type(value).__name__}.",
                     "hint": f"Pass {key} as one string; a program's lines "
                             f"are separated by newlines."})
+            if value is not None:
+                # a lone surrogate cannot be written out as UTF-8: the
+                # reply that echoed it would fail on the way back
+                arguments[key] = value.encode(
+                    "utf-8", "replace").decode("utf-8")
         if name == "olcabasic_help":
             return self._help(arguments.get("topic") or "")
         if self.session is None:

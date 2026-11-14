@@ -268,3 +268,12 @@ def test_the_unknown_tool_hint_names_python_exec_when_it_is_on(
     monkeypatch.setenv("OLCA_MCP_ALLOW_PYTHON", "1")
     h = Harness(make_server(client))
     assert "and python_exec" in h.call_text("nope", {})
+
+
+def test_a_lone_surrogate_in_the_code_does_not_break_the_reply(client):
+    import json as _json
+    from conftest import make_server
+    server = make_server(client)
+    reply = server.call_tool("olcabasic_run", {"code": 'PRINT "a\ud800b"'})
+    reply.encode("utf-8")                       # does not raise
+    assert _json.loads(reply)["ok"]
