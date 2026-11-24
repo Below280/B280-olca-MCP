@@ -3,7 +3,7 @@ Pull all units, unit groups, and flow properties from the connected
 openLCA database. Diagnoses MCP server compatibility and outputs a
 ready-to-paste UNIT_FP_MAP for the connected database.
 
-Run with: python pull_units.py
+Run with: python tools/diagnostics/pull_units.py
 
 Outputs:
   units_report.json   - structured data

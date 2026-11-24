@@ -2,7 +2,7 @@
 Test script: DQ system (flow schema) detection and assignment via IPC.
 
 Run with openLCA's IPC server active on port 8080:
-    python test_dq_systems.py
+    python tools/diagnostics/check_dq_systems.py
 
 What it does:
   1. Lists all DQ systems in the database
