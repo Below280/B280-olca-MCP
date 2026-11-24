@@ -1,0 +1,36 @@
+cff-version: 1.2.0
+message: "If you use B280-olca-MCP, please cite it as below."
+title: "B280-olca-MCP"
+type: software
+abstract: >-
+  A Model Context Protocol server that lets AI assistants build and
+  calculate openLCA models only through olcaBASIC, so that life cycle
+  assessment modelling rules are enforced in code rather than left to the
+  assistant.
+authors:
+  - given-names: Tom
+    family-names: Bradley
+    orcid: "https://orcid.org/0000-0002-4021-6493"
+    affiliation: Below280 Limited
+  - name: Below280 Limited
+    website: "https://below280.com"
+version: 2.0.0
+date-released: "2026-11-24"
+license: MPL-2.0
+repository-code: "https://github.com/Below280/B280-olca-MCP"
+url: "https://pypi.org/project/b280-olca-mcp/"
+keywords:
+  - openLCA
+  - life cycle assessment
+  - LCA
+  - MCP
+  - Model Context Protocol
+  - AI agents
+references:
+  - type: software
+    title: "olcaBASIC"
+    authors:
+      - given-names: Tom
+        family-names: Bradley
+    version: 0.4.0
+    repository-code: "https://github.com/Below280/olcaBASIC"
