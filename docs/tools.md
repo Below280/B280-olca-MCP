@@ -319,6 +319,16 @@ Extract pedigree matrix and data quality entries for a process and all its excha
 
 ---
 
+### `list_dq_systems`
+
+List the data quality systems in the database. Each can be set as a process's flow schema (`exchange_dq_system`) or process schema (`dq_system`) when it is created.
+
+**Inputs:** none
+
+**Example:** 'Which data quality systems does this database have?'
+
+---
+
 ## Calculate
 
 ### `calculate`
